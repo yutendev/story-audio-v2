@@ -1,10 +1,14 @@
 r"""T5.3–T5.8 — rewrite service: prompt, cache key định danh, validation, chunking.
 
-Port các phần hữu ích của Audio/viet_lai.py + truyen_audio.py (READ-ONLY):
-- chunk_text/_split_oversized (T5.4): gộp theo đoạn, tách an toàn đoạn quá dài.
-- cache (T5.8): key = f(prompt_version, part, subset, model); entry v2
+Port và nâng cấp theo Phase 1 (Chất lượng dịch):
+- chunk_text/_split_oversized: gộp theo đoạn, tách an toàn đoạn quá dài.
+- cache: key = f(prompt_version, part, subset, model); entry v2
   chứa checksum — corrupt/truncated bị từ chối; ghi qua atomic_write.
-- QA gate (T5.6) chạy trên văn đã ghép, kể cả cache hit.
+- validate: kiểm tra toàn diện chunk (CJK, fullwidth, mojibake, rò rỉ prompt,
+  lời dẫn AI, thiếu thuật ngữ, dấu kết câu, tỉ lệ độ dài, ngoặc thoại, finish_reason).
+- Vòng tự sửa theo mức (Tiered Self-Healing): Mức 1 (sửa xác định), Mức 2 (gọi lại LLM kèm lỗi),
+  Mức 3 (tách câu dịch), Hết mức 3 chọn bản ít lỗi nhất + ghi qa_report.
+- QA gate chạy trên văn đã ghép, kể cả cache hit.
 Output: mỗi chương chapters/NNNN/rewritten.txt + cache ở workdir/rewrite-cache/.
 """
 
@@ -17,9 +21,19 @@ import re
 import time
 from pathlib import Path
 
+from story_audio import config
 from story_audio import paths as P
 from story_audio.exit_codes import ExitCode
-from story_audio.normalize import split_raw, split_sentences
+from story_audio.normalize import (
+    CJK_CHAR_RE,
+    COMMON_CJK_TRANSLIT,
+    auto_sanitize_cjk,
+    clean_corrupted_chars,
+    normalize_brackets,
+    split_raw,
+    split_sentences,
+    strip_cjk,
+)
 from story_audio.providers import (
     DEFAULT_DEVKIT_MODEL,
     DEFAULT_GEMINI_MODEL,
@@ -33,13 +47,15 @@ from story_audio.providers import (
 )
 from story_audio.qa import qa_check, qa_cfg_from_payload
 
-PROMPT_VERSION = "1"
-CHUNK_MAX_CHARS = 1500  # port mặc định của Audio/truyen_audio.py::chunk_text
-CHUNK_MIN_CHARS, CHUNK_MAX_LIMIT = 200, 10000  # biên cấu hình cho phép của job
-ATTEMPTS = 3
+PROMPT_VERSION = config.PROMPT_VERSION
+CHUNK_MAX_CHARS = config.CHUNK_MAX_CHARS
+CHUNK_MIN_CHARS, CHUNK_MAX_LIMIT = config.CHUNK_MIN_CHARS, config.CHUNK_MAX_LIMIT
+ATTEMPTS = config.MAX_LLM_ATTEMPTS
 
-BAD_LEADINS = ("dưới đây là", "đây là bản", "đây là đoạn", "sau đây là",
-               "chắc chắn rồi", "bản viết lại")
+BAD_LEADINS = config.BAD_LEADINS
+PROMPT_LEAK_MARKERS = config.PROMPT_LEAK_MARKERS
+
+TERMINALS = set(".!?…。”’\"")
 
 
 def load_glossary(path: str | Path) -> dict[str, str]:
@@ -61,86 +77,39 @@ def glossary_subset(text: str, glossary: dict[str, str]) -> dict[str, str]:
     return {k: v for k, v in glossary.items() if k in text}
 
 
-COMMON_CJK_TRANSLIT: dict[str, str] = {
-    "淄": "Tri",
-    "眾": "chúng",
-    "众": "chúng",
-    "故": "cố",
-    "阁": "Các",
-    "閣": "Các",
-    "夫": "phu",
-    "剿": "tiễu",
-    "怀": "hoài",
-    "长期": "trường kỳ",
-    "街": "phố",
-    "抚朝": "vỗ về triều chính",
-    "抚不朝之臣": "vỗ về kẻ không chịu vào chầu",
-    "抚": "vỗ về",
-    "道": "Đạo",
-    "门": "môn",
-    "門": "môn",
-    "宗": "tông",
-    "皇": "hoàng",
-    "帝": "đế",
-    "王": "vương",
-    "君": "quân",
-    "神": "thần",
-    "仙": "tiên",
-    "魔": "ma",
-    "鬼": "quỷ",
-    "佛": "Phật",
-    "剑": "kiếm",
-    "劍": "kiếm",
-    "刀": "đao",
-    "法": "pháp",
-    "阵": "trận",
-    "陣": "trận",
-    "丹": "đan",
-    "符": "phù",
-    "器": "khí",
-    "灵": "linh",
-    "靈": "linh",
-    "气": "khí",
-    "氣": "khí",
-    "心": "tâm",
-    "天": "thiên",
-    "地": "địa",
-    "人": "nhân",
-    "生": "sinh",
-    "死": "tử",
-    "大": "đại",
-    "小": "tiểu",
-    "第": "thứ",
-    "章": "chương",
-}
-
-CJK_CHAR_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]")
-
-
-def auto_sanitize_cjk(text: str) -> str:
-    """Tự động phiên âm và làm sạch các ký tự chữ Hán (CJK) còn sót từ bản gốc convert."""
-    for cjk, vi in sorted(COMMON_CJK_TRANSLIT.items(), key=lambda x: len(x[0]), reverse=True):
-        if cjk in text:
-            text = text.replace(cjk, vi)
-    # Loại bỏ triệt để mọi ký tự CJK còn lại (nếu có ký tự lạ/watermark) để TTS đọc trơn tru
-    text = CJK_CHAR_RE.sub("", text)
-    return re.sub(r"[ \t]+", " ", text)
-
-
-def build_prompt(part: str, subset: dict[str, str], prev_tail: str) -> str:
+def build_prompt(
+    part: str,
+    subset: dict[str, str],
+    prev_tail: str,
+    previous_errors: list[str] | None = None,
+    sentence_mode: bool = False,
+) -> str:
     lines = [
         "Bạn là biên tập viên người Việt, viết lại truyện convert (bản dịch Hán Việt rời rạc, câu cứng) "
-        "thành văn xuôi tiếng Việt tự nhiên, mạch lạc, đọc lên trôi chảy.",
+        "thành văn xuôi tiếng Việt tự nhiên, mạch lạc, giàu cảm xúc, đọc lên trôi chảy.",
         "",
         "Yêu cầu bắt buộc:",
+        "- Ưu tiên câu ngắn gọn (mỗi câu tối đa khoảng 25 từ). Tách các câu dài phức tạp bằng dấu chấm hoặc dấu phẩy để giọng đọc tự nhiên, có nhịp thở.",
+        "- Ưu tiên văn nói tự nhiên, thuần Việt, trôi chảy, đọc lên êm tai, không dùng từ ngữ tối nghĩa.",
         "- Giữ nguyên toàn bộ tên riêng và thuật ngữ Hán Việt (nhân vật, địa danh, tông môn, cảnh giới, công pháp).",
         "- Dịch hoặc phiên âm toàn bộ chữ Hán, ký tự Trung Quốc (nếu còn sót trong bản gốc) sang chữ Quốc ngữ / âm Hán-Việt tiêu chuẩn. Tuyệt đối không để sót ký tự chữ Hán (CJK) nào trong văn bản viết lại.",
         "- Giữ đúng thứ tự và số lượng tình tiết của bản gốc, không thêm không bớt chi tiết.",
         "- Có thể gộp hoặc sắp lại câu cho dễ đọc nhưng không đổi ý.",
         "- Không thêm chú thích, bình luận, không thêm mở bài hay kết bài.",
         "- Giữ nguyên cách xuống đoạn: mỗi đoạn gốc tương ứng một đoạn, phân cách bằng dòng trống.",
-        "- Chỉ trả về văn bản đã viết lại, không thêm gì khác.",
+        "- Chỉ trả về văn bản đã viết lại, không thêm bất kỳ lời dẫn hay giải thích nào khác.",
     ]
+    if previous_errors:
+        lines += [
+            "",
+            "LƯU Ý QUAN TRỌNG: Lần thử trước chưa đạt các tiêu chí sau, hãy khắc phục triệt để:",
+        ]
+        lines += [f"- {err}" for err in previous_errors]
+    if sentence_mode:
+        lines += [
+            "",
+            "Yêu cầu bổ sung cho chế độ câu: Dịch chuẩn xác từng câu một theo thứ tự, đảm bảo không bỏ sót câu nào.",
+        ]
     if subset:
         lines += ["", "Bảng thuật ngữ (bắt buộc viết đúng như cột phải):"]
         lines += [f"- {k} → {v}" for k, v in sorted(subset.items())]
@@ -154,39 +123,150 @@ def build_prompt(part: str, subset: dict[str, str], prev_tail: str) -> str:
     return "\n".join(lines)
 
 
-def validate(original: str, rewritten: str, subset: dict[str, str]) -> list[str]:
-    """Kiểm đầu ra LLM — danh sách problems; [] = đạt."""
-    problems = []
+def validate(
+    original: str,
+    rewritten: str,
+    subset: dict[str, str],
+    finish_reason: str = "STOP",
+    check_cjk: bool = True,
+) -> list[str]:
+    """Kiểm đầu ra LLM ở tầng chunk — danh sách problems; [] = đạt."""
+    problems: list[str] = []
     if not rewritten.strip():
         return ["đầu ra rỗng"]
-    ratio = len(rewritten) / max(1, len(original))
-    if not (0.7 <= ratio <= 1.3):
-        problems.append(f"độ dài lệch (tỉ lệ {ratio:.2f})")
-    for term, fixed in subset.items():
-        if fixed not in rewritten:
-            problems.append(f"thiếu thuật ngữ: {fixed}")
+
+    if finish_reason and finish_reason.upper() not in ("STOP", "END_TURN", "COMPLETE"):
+        problems.append(f"finish_reason bất thường ({finish_reason})")
+
+    if check_cjk:
+        cjk_found = CJK_CHAR_RE.findall(rewritten)
+        if cjk_found:
+            problems.append(f"còn sót CJK ({len(cjk_found)} ký tự: {''.join(cjk_found[:5])})")
+
+    if "\ufffd" in rewritten:
+        problems.append("chứa ký tự hỏng U+FFFD")
+    fullwidth = re.findall(r"[\uff01-\uff5e\u3000]", rewritten)
+    if fullwidth:
+        problems.append(f"chứa ký tự fullwidth ({len(fullwidth)} ký tự)")
+    if re.search(r"(?:Ã¡|Ã©|Ã­|Ã³|Ãº|â€|â€™|â€œ)", rewritten):
+        problems.append("chứa chuỗi mojibake")
+
     head = rewritten.strip().lower()
     for bad in BAD_LEADINS:
         if head.startswith(bad):
             problems.append(f"lời dẫn AI: {rewritten.strip()[:40]}")
             break
+
+    for mk in PROMPT_LEAK_MARKERS:
+        if mk in rewritten:
+            problems.append(f"rò rỉ prompt ({mk.rstrip(':')})")
+            break
+
+    ratio = len(rewritten) / max(1, len(original))
+    if not (0.7 <= ratio <= 1.3):
+        problems.append(f"độ dài lệch (tỉ lệ {ratio:.2f})")
+
+    for term, fixed in subset.items():
+        if fixed not in rewritten:
+            problems.append(f"thiếu thuật ngữ: {fixed}")
+
+    orig_stripped = original.rstrip()
+    rewr_stripped = rewritten.rstrip()
+    if orig_stripped and orig_stripped[-1] in TERMINALS:
+        if not rewr_stripped or rewr_stripped[-1] not in TERMINALS:
+            problems.append("câu cuối mất dấu kết câu")
+
     qin = original.count('"') + original.count("“") + original.count("”")
     qout = rewritten.count('"') + rewritten.count("“") + rewritten.count("”")
     if abs(qout - qin) > max(1, 0.25 * qin):
         problems.append(f"ngoặc thoại lệch (vào {qin}, ra {qout})")
+
     return problems
+
+
+def apply_deterministic_fixes(
+    text: str,
+    original: str = "",
+    subset: dict[str, str] | None = None,
+) -> str:
+    """Mức 1 — Sửa xác định không cần gọi lại LLM:
+    - Bỏ dòng rò rỉ prompt hoặc dòng lời dẫn AI độc lập
+    - Chuẩn hóa ngoặc 【...】 -> (...), quote fullwidth -> chuẩn
+    - Bỏ ký tự hỏng (U+FFFD), zero-width, fullwidth space
+    - Phiên âm các chữ CJK có trong bảng translit chuẩn / subset
+    - Gộp câu lặp lại liên tiếp
+    - Đảm bảo dấu kết câu nếu bản gốc có
+    """
+    if not text.strip():
+        return text
+
+    # Bỏ các dòng rò rỉ prompt hoặc dòng chỉ là lời dẫn AI
+    lines = []
+    for line in text.splitlines():
+        l_strip = line.strip()
+        l_lower = l_strip.lower()
+        if any(mk in line for mk in PROMPT_LEAK_MARKERS):
+            continue
+        # Dòng độc lập chỉ chứa lời dẫn AI (kết thúc bằng dấu hai chấm hoặc là câu xã giao AI)
+        if any(l_lower.startswith(bad) for bad in BAD_LEADINS):
+            if (
+                l_strip.endswith(":")
+                or l_lower in ("chắc chắn rồi!", "chắc chắn rồi.", "tất nhiên!", "tất nhiên.")
+                or l_strip.endswith("dưới đây:")
+            ):
+                continue
+        lines.append(line)
+    text = "\n".join(lines).strip()
+
+    # Chuẩn hóa ngoặc và ký tự hỏng
+    text = normalize_brackets(text)
+    text = clean_corrupted_chars(text)
+
+    # Phiên âm CJK có trong bảng phiên âm chuẩn
+    text = auto_sanitize_cjk(text, replacements=subset)
+
+    # Thay thuật ngữ theo glossary nếu key có trong text mà fixed chưa có
+    if subset:
+        for k, v in subset.items():
+            if k in text and v not in text:
+                text = text.replace(k, v)
+
+    # Gộp câu lặp lại liên tiếp
+    sentences = split_sentences(text)
+    if sentences:
+        dedup_s = []
+        for s in sentences:
+            if not dedup_s or s != dedup_s[-1]:
+                dedup_s.append(s)
+            elif len(s) < 8:
+                dedup_s.append(s)
+        text = " ".join(dedup_s)
+
+    # Đảm bảo dấu kết câu nếu bản gốc có
+    orig_strip = original.rstrip()
+    if orig_strip and orig_strip[-1] in TERMINALS and text.strip():
+        if text.rstrip()[-1] not in TERMINALS:
+            text = text.rstrip() + "."
+
+    return text
 
 
 def model_fingerprint(custom_model: str = "") -> str:
     """Danh tính cấu hình LLM hiện tại (env) — đổi model/config → cache vô hiệu (T5.8)."""
-    return (f"gem={os.environ.get('VIETLAI_GEMINI_MODEL', DEFAULT_GEMINI_MODEL)}"
-            f";or={os.environ.get('VIETLAI_OPENROUTER_MODEL', DEFAULT_OPENROUTER_MODEL)}"
-            f";dk={os.environ.get('VIETLAI_DEVKIT_MODEL', DEFAULT_DEVKIT_MODEL)}"
-            f";m={custom_model}")
+    return (
+        f"gem={os.environ.get('VIETLAI_GEMINI_MODEL', DEFAULT_GEMINI_MODEL)}"
+        f";or={os.environ.get('VIETLAI_OPENROUTER_MODEL', DEFAULT_OPENROUTER_MODEL)}"
+        f";dk={os.environ.get('VIETLAI_DEVKIT_MODEL', DEFAULT_DEVKIT_MODEL)}"
+        f";m={custom_model}"
+    )
 
 
-def cache_key(part: str, subset: dict[str, str], version: str = PROMPT_VERSION,
-              model: str = "") -> str:
+def cache_key(
+    part: str,
+    subset: dict[str, str],
+    version: str = PROMPT_VERSION,
+    model: str = "",
+) -> str:
     """Key cache ĐỊNH DANH: version \\0 part \\0 subset (json sorted) \\0 model.
     Cùng (part, subset, version, model) luôn sinh cùng key — cache bền qua lần chạy."""
     h = hashlib.sha256()
@@ -269,34 +349,111 @@ def save_cache_entry(cache_dir: Path, key: str, text: str) -> None:
     P.atomic_write(cache_dir / f"{key}.txt", f"{cp}\n{text}")
 
 
-def rewrite_part(part, subset, prev_tail, client, cache, attempts=ATTEMPTS, model=""):
-    """Port rewrite_part: cache trước, thử `attempts` lần; cạn vòng → giữ phần gốc."""
+def rewrite_part(
+    part: str,
+    subset: dict[str, str],
+    prev_tail: str,
+    client: LLMClient,
+    cache: dict[str, str],
+    attempts: int = ATTEMPTS,
+    model: str = "",
+    strip_cjk_fallback: bool = False,
+) -> dict:
+    """Vòng tự sửa theo mức cho từng chunk: Mức 1 (deterministic) -> Mức 2 (retry prompt)
+    -> Mức 3 (sentence-level) -> Fallback bản ít lỗi nhất. Tối đa `attempts` LLM calls."""
     key = cache_key(part, subset, model=model)
     if key in cache:
-        return {"key": key, "text": cache[key], "backend": "cache", "attempts": 0,
-                "calls": 0, "problems": [], "cached": True}
-    prompt = build_prompt(part, subset, prev_tail)
-    problems: list[str] = []
+        return {
+            "key": key,
+            "text": cache[key],
+            "backend": "cache",
+            "attempts": 0,
+            "calls": 0,
+            "problems": [],
+            "cached": True,
+            "tier": "cache",
+        }
+
     calls = 0
-    for _i in range(1, attempts + 1):
+    candidates: list[dict] = []
+    prev_errors: list[str] = []
+
+    for attempt in range(1, attempts + 1):
+        is_sentence_mode = (attempt >= 3 and len(split_sentences(part)) > 1)
+        prompt = build_prompt(
+            part,
+            subset,
+            prev_tail,
+            previous_errors=prev_errors if attempt > 1 else None,
+            sentence_mode=is_sentence_mode,
+        )
+
         try:
-            text, backend, n = client.complete(prompt)
+            raw_text, backend, n = client.complete(prompt)
         except RateLimited:
-            raise  # quota xử lý ở tầng stage (không đếm là attempt validation)
+            raise
         except AuthError as e:
-            raise AuthError(str(e)) from e  # sai key — không fallback, tầng stage dừng PERMANENT
+            raise AuthError(str(e)) from e
         except ProviderError as e:
-            # mạng/HTTP nát — không retry validation; tầng stage quyết exit code
-            return {"key": key, "text": part, "backend": "lỗi", "attempts": _i,
-                    "calls": calls, "problems": [str(e)], "cached": False}
+            return {
+                "key": key,
+                "text": part,
+                "backend": "lỗi",
+                "attempts": attempt,
+                "calls": calls,
+                "problems": [str(e)],
+                "cached": False,
+                "tier": "error",
+            }
+
         calls += n
-        problems = validate(part, text, subset)
+
+        # Mức 1: Sửa xác định trên kết quả LLM
+        fixed_text = apply_deterministic_fixes(raw_text, original=part, subset=subset)
+        problems = validate(part, fixed_text, subset)
+
         if not problems:
-            cache[key] = text
-            return {"key": key, "text": text, "backend": backend, "attempts": _i,
-                    "calls": calls, "problems": [], "cached": False}
-    return {"key": key, "text": part, "backend": "gốc", "attempts": attempts,
-            "calls": calls, "problems": problems, "cached": False}
+            cache[key] = fixed_text
+            tier_name = f"tier{attempt}" if attempt > 1 else "tier1"
+            return {
+                "key": key,
+                "text": fixed_text,
+                "backend": backend,
+                "attempts": attempt,
+                "calls": calls,
+                "problems": [],
+                "cached": False,
+                "tier": tier_name,
+            }
+
+        candidates.append({
+            "text": fixed_text,
+            "problems": problems,
+            "backend": backend,
+            "attempt": attempt,
+        })
+        prev_errors = list(problems)
+
+    # Hết số lần thử mà vẫn còn lỗi: chọn bản ít lỗi nhất (fallback)
+    best = min(candidates, key=lambda c: len(c["problems"]))
+    best_text = best["text"]
+    best_probs = list(best["problems"])
+    cjk_stripped = 0
+
+    if strip_cjk_fallback:
+        best_text, cjk_stripped = strip_cjk(best_text)
+
+    return {
+        "key": key,
+        "text": best_text,
+        "backend": "gốc",
+        "attempts": attempts,
+        "calls": calls,
+        "problems": best_probs,
+        "cached": False,
+        "tier": "fallback",
+        "cjk_stripped": cjk_stripped,
+    }
 
 
 def _chapter_dirs(workdir: Path) -> list[Path]:
@@ -330,14 +487,13 @@ def rewrite_stage(payload, workdir: Path, em, providers=None, sleep=time.sleep) 
             gemini_api_key=gemini_key or None,
             devkit_api_key=devkit_key or None,
             devkit_base_url=devkit_base_url or None,
-        )  # sai policy → ValueError
+        )
     if not providers:
         raise ValueError(
             "không có provider nào cho rewrite — cấu hình GEMINI_API_KEY/OPENROUTER_API_KEY/DEVKIT_API_KEY "
             "hoặc payload.providers tường minh"
         )
     client = LLMClient(providers, sleep=sleep)
-    # biên chunk cấu hình theo job — kẹp trong [200, 10000] để bảo vệ prompt/LLM
     raw_bound = payload.get("chunk_max_chars")
     if isinstance(raw_bound, bool) or not isinstance(raw_bound, int):
         bound = CHUNK_MAX_CHARS
@@ -346,7 +502,8 @@ def rewrite_stage(payload, workdir: Path, em, providers=None, sleep=time.sleep) 
     cache_dir = workdir / "rewrite-cache"
     cache = load_cache(cache_dir)
     qa_cfg = qa_cfg_from_payload(payload.get("qa"))
-    fp = model_fingerprint(custom_model=ai_model)  # fingerprint cấu hình LLM của lần chạy — cache key v2 (T5.8)
+    fp = model_fingerprint(custom_model=ai_model)
+    strip_fallback = bool(payload.get("strip_cjk_fallback", False))
 
     em.send("stage_started", stage="rewrite")
     chapters = _chapter_dirs(workdir)
@@ -362,36 +519,76 @@ def rewrite_stage(payload, workdir: Path, em, providers=None, sleep=time.sleep) 
     processed = 0
     quota: RateLimited | None = None
     auth_err: AuthError | None = None
+
+    qa_report: dict = {
+        "chapters": [],
+        "total_calls": 0,
+        "val_fallback": 0,
+        "qa_failed": 0,
+    }
+
     for d in chapters:
         no = int(d.name)
         src = d / "normalized.txt"
         if not src.is_file():
             skipped += 1
             em.send("chapter_status", chapter_no=no, state="failed")
-            em.send("error", message=f"chương {no} thiếu normalized.txt (chạy normalize trước)",
-                    retryable=False)
+            em.send("error", message=f"chương {no} thiếu normalized.txt (chạy normalize trước)", retryable=False)
             continue
         raw = src.read_text(encoding="utf-8")
         title, paragraphs = split_raw(raw)
+        # Tiền xử lý phiên âm các ký tự CJK có trong bảng chuẩn (không xóa CJK còn lại để LLM dịch)
+        paragraphs = [auto_sanitize_cjk(p, replacements=glossary) for p in paragraphs]
         parts = [p for p in chunk_text(paragraphs, bound) if p]
         if not title or not parts:
             skipped += 1
             em.send("chapter_status", chapter_no=no, state="failed")
             em.send("error", message=f"chương {no} rỗng sau normalize", retryable=False)
             continue
+
         out_parts: list[str] = []
         prev_tail = ""
+        chapter_stats = {
+            "chapter_no": no,
+            "chunks_count": len(parts),
+            "tier1_count": 0,
+            "tier2_count": 0,
+            "tier3_count": 0,
+            "fallback_count": 0,
+            "cjk_stripped_count": 0,
+        }
+
         for i, part in enumerate(parts, 1):
             subset = glossary_subset(part, glossary)
             try:
-                r = rewrite_part(part, subset, prev_tail, client, cache, model=fp)
+                r = rewrite_part(
+                    part,
+                    subset,
+                    prev_tail,
+                    client,
+                    cache,
+                    model=fp,
+                    strip_cjk_fallback=strip_fallback,
+                )
             except RateLimited as e:
                 quota = e
                 break
             except AuthError as e:
                 auth_err = e
                 break
+
             total_calls += r["calls"]
+            tier = r.get("tier", "unknown")
+            if tier == "tier1":
+                chapter_stats["tier1_count"] += 1
+            elif tier == "tier2":
+                chapter_stats["tier2_count"] += 1
+            elif tier == "tier3":
+                chapter_stats["tier3_count"] += 1
+            elif tier == "fallback":
+                chapter_stats["fallback_count"] += 1
+            chapter_stats["cjk_stripped_count"] += r.get("cjk_stripped", 0)
+
             if r["backend"] in ("gốc", "lỗi"):
                 if r["backend"] == "lỗi":
                     net_fallback += 1
@@ -404,6 +601,7 @@ def rewrite_stage(payload, workdir: Path, em, providers=None, sleep=time.sleep) 
                 )
             elif not r["cached"]:
                 save_cache_entry(cache_dir, r["key"], r["text"])
+
             out_parts.append(r["text"])
             prev_tail = " ".join(split_sentences(r["text"])[-3:])
             em.send(
@@ -414,19 +612,25 @@ def rewrite_stage(payload, workdir: Path, em, providers=None, sleep=time.sleep) 
                 chapter_no=no,
                 message=f"Đã chuốt văn xong: Chương {no} (Đoạn {i}/{len(parts)})",
             )
+
         if quota is not None or auth_err is not None:
             break
+
         content = title + "\n\n" + "\n\n".join(out_parts) + "\n"
-        # Tự động phiên âm và làm sạch các ký tự CJK còn sót từ truyện convert gốc
-        content = auto_sanitize_cjk(content)
         # QA gate chạy TRÊN văn đã ghép — kể cả khi mọi part từ cache (T5.6)
         qa_probs = qa_check(content, raw, glossary, qa_cfg)
         if qa_probs:
             qa_failed += 1
-            em.send("error", message=f"chương {no} trượt QA: {'; '.join(qa_probs)}",
-                    retryable=False)
+            em.send("error", message=f"chương {no} trượt QA: {'; '.join(qa_probs)}", retryable=False)
+
         dst = d / "rewritten.txt"
         P.atomic_write(dst, content)
+
+        # Lưu qa_report của chương
+        chapter_stats["qa_problems"] = qa_probs
+        qa_report["chapters"].append(chapter_stats)
+        P.atomic_write(d / "qa_report.json", json.dumps(chapter_stats, ensure_ascii=False, indent=2))
+
         processed += 1
         em.send("chapter_status", chapter_no=no, state="rewritten")
         em.send(
@@ -436,8 +640,13 @@ def rewrite_stage(payload, workdir: Path, em, providers=None, sleep=time.sleep) 
             checksum=hashlib.sha256(dst.read_bytes()).hexdigest(),
         )
 
+    # Lưu tổng hợp qa_report toàn job
+    qa_report["total_calls"] = total_calls
+    qa_report["val_fallback"] = val_fallback
+    qa_report["qa_failed"] = qa_failed
+    P.atomic_write(workdir / "qa_report.json", json.dumps(qa_report, ensure_ascii=False, indent=2))
+
     if quota is not None:
-        # cạn quota toàn provider free → Node lưu notBefore rồi đợi, KHÔNG retry spin
         kind, not_before = quota_not_before(str(quota))
         em.send(
             "quota_wait",
@@ -465,7 +674,6 @@ def rewrite_stage(payload, workdir: Path, em, providers=None, sleep=time.sleep) 
     if skipped:
         summary += f"; {skipped} chương thiếu input"
     if net_fallback:
-        # lỗi mạng — cache đã lưu phần xong; Node schedule lại, chỉ gọi phần còn thiếu
         em.send("final", status="failed", summary=f"{summary}; {net_fallback} phần lỗi mạng")
         return ExitCode.RETRYABLE
     if val_fallback or qa_failed or skipped:

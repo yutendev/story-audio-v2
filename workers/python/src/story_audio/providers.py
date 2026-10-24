@@ -20,7 +20,9 @@ from typing import Callable, Protocol
 
 import requests
 
-TEMPERATURE = 0.3  # giống bản cũ — cùng cấu hình model settings
+from story_audio import config
+
+TEMPERATURE = config.DEFAULT_TEMPERATURE
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
