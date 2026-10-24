@@ -163,7 +163,7 @@ def validate(
             break
 
     ratio = len(rewritten) / max(1, len(original))
-    if not (0.7 <= ratio <= 1.3):
+    if not (config.MIN_RATIO <= ratio <= config.MAX_RATIO):
         problems.append(f"độ dài lệch (tỉ lệ {ratio:.2f})")
 
     for term, fixed in subset.items():
@@ -178,7 +178,7 @@ def validate(
 
     qin = original.count('"') + original.count("“") + original.count("”")
     qout = rewritten.count('"') + rewritten.count("“") + rewritten.count("”")
-    if abs(qout - qin) > max(1, 0.25 * qin):
+    if abs(qout - qin) > max(1, config.QUOTE_DEVIATION_TOLERANCE * qin):
         problems.append(f"ngoặc thoại lệch (vào {qin}, ra {qout})")
 
     return problems
@@ -231,22 +231,30 @@ def apply_deterministic_fixes(
             if k in text and v not in text:
                 text = text.replace(k, v)
 
-    # Gộp câu lặp lại liên tiếp
+    # Gộp câu lặp lại liên tiếp:
+    # - Thoại trong ngoặc kép (“...”) hoặc câu ngắn (< 15 ký tự) được phép lặp hợp lệ (tối đa repeat_max)
+    # - Câu trần thuật dài bị lặp do AI kẹt loop được gộp về 1 câu duy nhất
     sentences = split_sentences(text)
     if sentences:
         dedup_s = []
+        cur_s = None
+        consecutive_count = 0
+        max_repeat = int(config.DEFAULT_QA.get("repeat_max", 3))
         for s in sentences:
-            if not dedup_s or s != dedup_s[-1]:
-                dedup_s.append(s)
-            elif len(s) < 8:
+            is_dialogue_or_short = (
+                s.startswith(('"', "“", "'", "‘"))
+                or s.endswith(('"', "”", "'", "’"))
+                or len(s) < 15
+            )
+            if s == cur_s:
+                consecutive_count += 1
+                if is_dialogue_or_short and consecutive_count <= max_repeat:
+                    dedup_s.append(s)
+            else:
+                cur_s = s
+                consecutive_count = 1
                 dedup_s.append(s)
         text = " ".join(dedup_s)
-
-    # Đảm bảo dấu kết câu nếu bản gốc có
-    orig_strip = original.rstrip()
-    if orig_strip and orig_strip[-1] in TERMINALS and text.strip():
-        if text.rstrip()[-1] not in TERMINALS:
-            text = text.rstrip() + "."
 
     return text
 
@@ -363,13 +371,15 @@ def rewrite_part(
     -> Mức 3 (sentence-level) -> Fallback bản ít lỗi nhất. Tối đa `attempts` LLM calls."""
     key = cache_key(part, subset, model=model)
     if key in cache:
+        cached_text = cache[key]
+        cached_probs = validate(part, cached_text, subset)
         return {
             "key": key,
-            "text": cache[key],
+            "text": cached_text,
             "backend": "cache",
             "attempts": 0,
             "calls": 0,
-            "problems": [],
+            "problems": cached_probs,
             "cached": True,
             "tier": "cache",
         }
@@ -503,7 +513,7 @@ def rewrite_stage(payload, workdir: Path, em, providers=None, sleep=time.sleep) 
     cache = load_cache(cache_dir)
     qa_cfg = qa_cfg_from_payload(payload.get("qa"))
     fp = model_fingerprint(custom_model=ai_model)
-    strip_fallback = bool(payload.get("strip_cjk_fallback", False))
+    strip_fallback = bool(payload.get("strip_cjk_fallback", config.DEFAULT_STRIP_CJK_FALLBACK))
 
     em.send("stage_started", stage="rewrite")
     chapters = _chapter_dirs(workdir)

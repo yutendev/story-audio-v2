@@ -12,31 +12,20 @@ from __future__ import annotations
 
 import re
 
+from story_audio import config
 from story_audio.normalize import split_sentences
 
 CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af]")
 
 # mảnh prompt có thể bị LLM nhét nhầm vào đầu ra
-PROMPT_MARKERS = (
-    "Ngữ cảnh:",
-    "Đoạn bản gốc cần viết lại",
-    "Bảng thuật ngữ",
-    "Yêu cầu bắt buộc",
-    "biên tập viên người Việt",
-)
+PROMPT_MARKERS = config.PROMPT_LEAK_MARKERS
 
 # cặp ngoặc cân đối từng chữ (ngoặc thoại "…"" đã xử lý riêng ở validate)
 BRACKET_PAIRS = (("(", ")"), ("[", "]"), ("「", "」"))
 
 TERMINALS = set(".!?…。”’\"")
 
-DEFAULT_QA: dict[str, float] = {
-    "cjk_max": 0,          # tối đa ký tự CJK còn sót trong chương
-    "repeat_max": 3,       # tối đa lần một câu (≥ repeat_min_len) được lặp
-    "repeat_min_len": 8,   # câu ngắn hơn không tính là lặp đáng ngờ
-    "min_ratio": 0.7,      # biên tỉ lệ độ dài đầu ra/bản gốc
-    "max_ratio": 1.3,
-}
+DEFAULT_QA: dict[str, float] = dict(config.DEFAULT_QA)
 
 
 def _is_number(v) -> bool:

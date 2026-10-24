@@ -1,7 +1,7 @@
 """Cấu hình tập trung cho toàn bộ pipeline Story Audio.
 
 Mọi hằng số (ngưỡng, số lần thử, concurrency, độ dài chunk, độ dài khoảng lặng,
-thông số audio) được tập trung tại đây theo quy tắc chung của pipeline.
+thông số audio, retry) được tập trung tại đây theo quy tắc chung của pipeline.
 """
 
 from __future__ import annotations
@@ -41,21 +41,37 @@ PROMPT_LEAK_MARKERS = (
 )
 
 # ---------------------------------------------------------
+# Validation & Length Ratio Settings
+# ---------------------------------------------------------
+MIN_RATIO = 0.7
+MAX_RATIO = 1.3
+QUOTE_DEVIATION_TOLERANCE = 0.25
+
+# ---------------------------------------------------------
 # QA Gate Chương (Default Thresholds)
 # ---------------------------------------------------------
 DEFAULT_QA: dict[str, float] = {
     "cjk_max": 0,          # Tối đa ký tự CJK còn sót trong chương
     "repeat_max": 3,       # Tối đa lần một câu (≥ repeat_min_len) được lặp
     "repeat_min_len": 8,   # Câu ngắn hơn không tính là lặp đáng ngờ
-    "min_ratio": 0.7,      # Biên dưới tỉ lệ độ dài đầu ra / bản gốc
-    "max_ratio": 1.3,      # Biên trên tỉ lệ độ dài đầu ra / bản gốc
+    "min_ratio": MIN_RATIO,      # Biên dưới tỉ lệ độ dài đầu ra / bản gốc
+    "max_ratio": MAX_RATIO,      # Biên trên tỉ lệ độ dài đầu ra / bản gốc
 }
+
+# ---------------------------------------------------------
+# Fallback Options
+# ---------------------------------------------------------
+# Phase 1: Mặc định tắt (False) để QA Gate cấp chương kiểm tra trung thực;
+# có thể opt-in qua payload["strip_cjk_fallback"] = True.
+# Sang Phase 2: Chặn cứng trước TTS sẽ kích hoạt triệt để.
+DEFAULT_STRIP_CJK_FALLBACK = False
 
 # ---------------------------------------------------------
 # TTS & Audio Settings (Phase 3 & 4)
 # ---------------------------------------------------------
 TTS_CHUNK_MIN_CHARS = 200
 TTS_CHUNK_MAX_CHARS = 400
+TTS_RETRIES = 8                # Số lần thử lại khi edge-tts trả rỗng
 
 SILENCE_SENTENCE_SEC = 0.35    # Khoảng lặng sau câu
 SILENCE_PARAGRAPH_SEC = 0.9    # Khoảng lặng sau đoạn

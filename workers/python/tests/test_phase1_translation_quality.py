@@ -16,6 +16,7 @@ from story_audio.normalize import (
     auto_sanitize_cjk,
     clean_corrupted_chars,
     normalize_text,
+    split_sentences,
     strip_cjk,
 )
 from story_audio.providers import LLMClient
@@ -245,3 +246,100 @@ def test_1_4_prompt_version_bumped():
     assert PROMPT_VERSION != "1"
     assert config.PROMPT_VERSION != "1"
     assert config.DEFAULT_TEMPERATURE == 0.3
+
+
+# =====================================================================
+# BỔ SUNG CÁC TEST THEO 11 TIÊU CHÍ NGHIỆM THU
+# =====================================================================
+
+
+def test_item1_glossary_self_healing_tier1_deterministic_fix():
+    """Mục 1: Mức 1 tự động thay thuật ngữ chuẩn nếu raw có key và LLM để sót key thô."""
+    orig = "khương không lo cùng Dưỡng Tâm Cung chủ đứng đợi ở ngoài điện."
+    glossary = {
+        "khương không lo": "Khương Vô Ưu",
+        "Dưỡng Tâm Cung chủ": "Dưỡng Tâm Cung chủ",
+    }
+    # LLM giữ nguyên cụm convert thô "khương không lo"
+    raw_llm = "Hắn nhìn thấy khương không lo cùng Dưỡng Tâm Cung chủ đang đứng đợi ở đại điện."
+    fixed = apply_deterministic_fixes(raw_llm, original=orig, subset=glossary)
+    assert "Khương Vô Ưu" in fixed
+    assert "Dưỡng Tâm Cung chủ" in fixed
+    assert validate(orig, fixed, glossary) == []
+
+
+def test_item1_glossary_self_healing_tier2_feedback_retry():
+    """Mục 1: Mức 2 tự sửa khi LLM bỏ quên hoàn toàn thuật ngữ (không có cả key thô)."""
+    orig = "khương không lo xuất hiện với khí thế lẫm liệt."
+    glossary = {"khương không lo": "Khương Vô Ưu"}
+
+    # Lần 1: LLM quên hẳn tên Khương Vô Ưu
+    res1 = "Vị vương gia trẻ tuổi xuất hiện với khí thế lẫm liệt."
+    # Lần 2: Nhận lỗi thiếu thuật ngữ và đưa đúng tên vào (giữ đúng tỉ lệ độ dài)
+    res2 = "Khương Vô Ưu xuất hiện với khí thế lẫm liệt."
+
+    provider = ScriptedProvider([res1, res2])
+    client = LLMClient([provider], sleep=_NO_SLEEP)
+    cache: dict[str, str] = {}
+
+    r = rewrite_part(orig, glossary, "", client, cache, attempts=3)
+    assert r["tier"] == "tier2"
+    assert r["attempts"] == 2
+    assert "thiếu thuật ngữ: Khương Vô Ưu" in provider.prompts[1]
+    assert "Khương Vô Ưu" in r["text"]
+
+
+def test_item5_no_blind_terminal_append_when_truncated():
+    """Mục 5: Mức 1 KHÔNG được tự ý bù dấu chấm khi câu bị cắt cụt; phải để validate bắt lỗi."""
+    orig = "Hắn bước vào sân rồi rút thanh trường kiếm ra."
+    # Câu bị cắt cụt do chạm token limit (thiếu dấu kết câu và cụt ý)
+    truncated = "Hắn bước vào sân rồi rút thanh trường kiếm ra sau đó thì"
+    fixed = apply_deterministic_fixes(truncated, original=orig, subset={})
+    # Không được tự ý nhét '.' vào đuôi câu cụt
+    assert not fixed.endswith(".")
+    probs = validate(orig, fixed, {})
+    assert any("câu cuối mất dấu kết câu" in p for p in probs)
+
+
+def test_item6_nfkc_ellipsis_and_split_sentences():
+    """Mục 6: NFKC bảo toàn dấu '…' và các dấu câu khác; split_sentences tách câu chuẩn xác."""
+    text_with_ellipsis = "Hắn im lặng hồi lâu… Rồi thở dài một tiếng! “Đi thôi…”"
+    cleaned = clean_corrupted_chars(text_with_ellipsis)
+    # Dấu ba chấm '…' (U+2026) được bảo toàn
+    assert "…" in cleaned
+    assert "..." not in cleaned
+
+    # Tách câu đúng trên cả '…' và '!' và ngoặc thoại
+    sentences = split_sentences(cleaned)
+    assert len(sentences) == 3
+    assert sentences[0] == "Hắn im lặng hồi lâu…"
+    assert sentences[1] == "Rồi thở dài một tiếng!"
+    assert sentences[2] == "“Đi thôi…”"
+
+    # Với chuỗi có fullwidth
+    fw_text = "Chào các bạn！Các bạn có khoẻ không？Tôi rất khoẻ．"
+    fw_cleaned = clean_corrupted_chars(fw_text)
+    assert "！" not in fw_cleaned and "!" in fw_cleaned
+    assert "？" not in fw_cleaned and "?" in fw_cleaned
+    assert "．" not in fw_cleaned and "." in fw_cleaned
+    fw_sentences = split_sentences(fw_cleaned)
+    assert len(fw_sentences) == 3
+
+
+def test_item7_dialogue_repetition_threshold():
+    """Mục 7: Thoại lặp hợp lệ (2-3 lần) được GIỮ NGUYÊN; chỉ gộp khi lặp > repeat_max (> 3 lần)."""
+    # Lời thoại lặp 2 lần thể hiện cảm xúc khẩn cấp -> GIỮ NGUYÊN
+    dialogue_2 = "“Chạy mau đi! Chạy mau đi!” Hắn hét lớn."
+    fixed_2 = apply_deterministic_fixes(dialogue_2)
+    assert "Chạy mau đi! Chạy mau đi!" in fixed_2
+
+    # Lời thoại lặp 3 lần -> GIỮ NGUYÊN (<= repeat_max = 3)
+    dialogue_3 = "Cứu mạng! Cứu mạng! Cứu mạng! Ai đó cứu với!"
+    fixed_3 = apply_deterministic_fixes(dialogue_3)
+    assert fixed_3.count("Cứu mạng!") == 3
+
+    # LLM kẹt loop lặp 7 lần liên tiếp câu trần thuật dài -> gộp về 1 câu
+    hallucination = "Trời sẫm tối thật rồi. " * 7
+    fixed_loop = apply_deterministic_fixes(hallucination)
+    assert fixed_loop.count("Trời sẫm tối thật rồi.") == 1
+

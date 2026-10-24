@@ -127,11 +127,16 @@ def strip_cjk(text: str) -> tuple[str, int]:
 
 
 def clean_corrupted_chars(text: str) -> str:
-    """Loại bỏ ký tự hỏng (U+FFFD), zero-width characters, chuẩn hóa fullwidth."""
+    """Loại bỏ ký tự hỏng (U+FFFD), zero-width characters, chuẩn hóa fullwidth
+    nhưng bảo vệ dấu ba chấm '…' (U+2026) không bị NFKC phân rã ngoài ý muốn.
+    """
     text = text.replace("\ufffd", "")
     text = re.sub(r"[\ufeff\u200b\u200c\u200d\u200e\u200f]", "", text)
     text = text.replace("\u3000", " ")
+    had_ellipsis = "…" in text
     text = unicodedata.normalize("NFKC", text)
+    if had_ellipsis:
+        text = text.replace("...", "…")
     return text
 
 

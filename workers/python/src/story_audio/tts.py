@@ -23,13 +23,14 @@ from typing import Awaitable, Callable, Protocol
 
 import edge_tts
 
+from story_audio import config
 from story_audio.exit_codes import ExitCode
 from story_audio.normalize import split_raw
 from story_audio.rewrite import chunk_text
 
 DEFAULT_VOICE = "vi-VN-HoaiMyNeural"  # port từ bản cũ
 DEFAULT_RATE = "-10%"                 # port từ bản cũ
-TTS_RETRIES = 8  # service edge-tts thỉnh thoảng trả rỗng (NoAudioReceived) cả với text nhỏ — thêm cơ hội thử lại
+TTS_RETRIES = config.TTS_RETRIES  # service edge-tts thỉnh thoảng trả rỗng (NoAudioReceived) cả với text nhỏ — thêm cơ hội thử lại
 TTS_CONCURRENCY = 3
 _RATE_RE = re.compile(r"^[+-]\d+%$")
 
