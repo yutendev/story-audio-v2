@@ -20,10 +20,13 @@ from story_audio.normalize import (
     strip_cjk,
 )
 from story_audio.providers import LLMClient
+from story_audio.qa import qa_check
 from story_audio.rewrite import (
     PROMPT_VERSION,
     apply_deterministic_fixes,
     build_prompt,
+    cache_key,
+    glossary_subset,
     rewrite_part,
     validate,
 )
@@ -342,4 +345,104 @@ def test_item7_dialogue_repetition_threshold():
     hallucination = "Trời sẫm tối thật rồi. " * 7
     fixed_loop = apply_deterministic_fixes(hallucination)
     assert fixed_loop.count("Trời sẫm tối thật rồi.") == 1
+
+
+def test_requirement3_cache_hit_invalid_triggers_self_healing():
+    """Yêu cầu 3: Cache hit mà validate trượt: coi như cache miss và kích hoạt vòng tự sửa."""
+    part = "Đoạn văn gốc cần viết lại một cách tự nhiên và trôi chảy."
+    key = cache_key(part, {})
+    # Cache chứa text bị lỗi (chứa CJK chưa dịch)
+    corrupted_cache = {key: "Đoạn văn viết lại có chữ Hán 宗 môn chưa dịch."}
+    
+    # LLM trả về bản sạch chuẩn
+    clean_llm = "Đoạn văn viết lại hoàn chỉnh tự nhiên và không còn lỗi nào."
+    provider = ScriptedProvider([clean_llm])
+    client = LLMClient([provider])
+
+    r = rewrite_part(part, {}, "", client, corrupted_cache)
+    # Không được nhận bản lỗi từ cache
+    assert r["cached"] is False
+    assert r["tier"] in ("tier1", "tier2")
+    assert r["calls"] >= 1
+    assert "宗" not in r["text"]
+    assert r["text"] == clean_llm
+    # Cache được cập nhật bản sạch mới
+    assert corrupted_cache[key] == clean_llm
+
+
+def test_requirement3_fallback_not_cached():
+    """Yêu cầu 3: Kết quả fallback tuyệt đối KHÔNG được ghi vào cache."""
+    part = "Bản gốc truyện convert."
+    key = cache_key(part, {})
+    cache: dict[str, str] = {}
+    
+    # Mọi lượt LLM đều trả về text hỏng (quá ngắn < MIN_RATIO)
+    provider = ScriptedProvider(["Quá ngắn.", "Vẫn ngắn.", "Ngắn."])
+    client = LLMClient([provider])
+
+    r = rewrite_part(part, {}, "", client, cache, attempts=3)
+    assert r["tier"] == "fallback"
+    assert r["cached"] is False
+    # Key tuyệt đối không có trong cache
+    assert key not in cache
+
+
+def test_requirement4_nfc_glossary_duong_tam_cung_chu_and_khuong_vo_ta():
+    """Yêu cầu 4: So khớp glossary (validate và QA Gate) chuẩn hóa NFC hai vế và không phân biệt hoa thường.
+    Kiểm tra cụ thể 'Dưỡng Tâm Cung chủ' với u\\u0309 và 'khương vô tà'."""
+    # 1. 'Dưỡng Tâm Cung chủ' với combining accent u\u0309
+    raw_combining = "Đại điện vắng vẻ, Dưỡng Tâm Cung chu\u0309 cùng khương vô tà đứng ngoài cửa."
+    glossary = {
+        "Dưỡng Tâm Cung chu\u0309": "Dưỡng Tâm Cung chủ",  # key có combining accent
+        "khương vô tà": "Khương Vô Tà",                   # key viết thường toàn bộ
+    }
+    subset = glossary_subset(raw_combining, glossary)
+    assert len(subset) == 2
+
+    # Văn bản đầu ra chuẩn hóa precomposed NFC
+    rewritten = "Đại điện vắng vẻ, Dưỡng Tâm Cung chủ cùng Khương Vô Tà đứng ngoài cửa."
+    
+    # validate tầng chunk
+    probs_val = validate(raw_combining, rewritten, subset)
+    assert probs_val == []
+
+    # QA Gate tầng chương
+    probs_qa = qa_check(rewritten, raw_combining, glossary)
+    assert probs_qa == []
+
+    # Trường hợp bản gốc viết hoa 'Khương Vô Tà', glossary viết thường 'khương vô tà'
+    raw_capitalized = "Khương Vô Tà chậm rãi bước vào đại điện nguy nga tráng lệ."
+    subset_cap = glossary_subset(raw_capitalized, glossary)
+    assert "khương vô tà" in subset_cap
+    fixed_text = apply_deterministic_fixes("khương vô tà bước vào đại điện nguy nga.", subset=subset_cap)
+    assert "Khương Vô Tà" in fixed_text
+
+
+def test_requirement5_tier3_sentence_line_mismatch_handling():
+    """Yêu cầu 5: Mức 3 xử lý khi số dòng LLM trả về khác số câu gửi đi."""
+    # Bản gốc có 3 câu
+    part = "Câu thứ nhất rất rõ ràng. Câu thứ hai tiếp diễn nhịp nhàng. Câu thứ ba kết thúc trọn vẹn."
+    orig_s = split_sentences(part)
+    assert len(orig_s) == 3
+
+    # LLM ở Mức 3 trả về 2 dòng (gộp câu 1 và câu 2 vào cùng một dòng)
+    llm_2_lines = "Câu thứ nhất rất rõ ràng và câu thứ hai tiếp diễn nhịp nhàng.\nCâu thứ ba kết thúc trọn vẹn."
+    
+    # Provider mô phỏng 2 lượt đầu fail, lượt 3 vào sentence mode với 2 dòng
+    provider = ScriptedProvider([
+        "Lỗi một còn sót CJK 宗.",
+        "Lỗi hai còn sót CJK 宗.",
+        llm_2_lines,
+    ])
+    client = LLMClient([provider])
+    cache: dict[str, str] = {}
+
+    r = rewrite_part(part, {}, "", client, cache, attempts=3)
+    assert r["tier"] == "tier3"
+    assert r["calls"] == 3
+    assert r["problems"] == []
+    # Văn bản được ghép chuẩn xác
+    assert "Câu thứ nhất rất rõ ràng" in r["text"]
+    assert "Câu thứ ba kết thúc trọn vẹn." in r["text"]
+
 

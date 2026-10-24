@@ -19,6 +19,7 @@ import json
 import os
 import re
 import time
+import unicodedata
 from pathlib import Path
 
 from story_audio import config
@@ -73,8 +74,16 @@ def load_glossary(path: str | Path) -> dict[str, str]:
 
 
 def glossary_subset(text: str, glossary: dict[str, str]) -> dict[str, str]:
-    """Chỉ giữ mục thuật ngữ có lộ trong phần văn bản — không gửi cả bảng ra LLM."""
-    return {k: v for k, v in glossary.items() if k in text}
+    """Chỉ giữ mục thuật ngữ có lộ trong phần văn bản — không gửi cả bảng ra LLM.
+    Chuẩn hóa NFC cả hai vế và so khớp case-insensitive đối với key."""
+    text_nfc = unicodedata.normalize("NFC", text)
+    text_lower = text_nfc.lower()
+    res: dict[str, str] = {}
+    for k, v in glossary.items():
+        k_nfc = unicodedata.normalize("NFC", k)
+        if k_nfc in text_nfc or k_nfc.lower() in text_lower:
+            res[k] = v
+    return res
 
 
 def build_prompt(
@@ -106,9 +115,11 @@ def build_prompt(
         ]
         lines += [f"- {err}" for err in previous_errors]
     if sentence_mode:
+        orig_s = split_sentences(part)
         lines += [
             "",
-            "Yêu cầu bổ sung cho chế độ câu: Dịch chuẩn xác từng câu một theo thứ tự, đảm bảo không bỏ sót câu nào.",
+            f"Yêu cầu bổ sung cho chế độ câu (Mức 3): Bản gốc gồm {len(orig_s)} câu. "
+            f"Hãy dịch chính xác lần lượt từng câu trên từng dòng riêng biệt (đúng {len(orig_s)} dòng, không thêm bớt dòng).",
         ]
     if subset:
         lines += ["", "Bảng thuật ngữ (bắt buộc viết đúng như cột phải):"]
@@ -166,8 +177,10 @@ def validate(
     if not (config.MIN_RATIO <= ratio <= config.MAX_RATIO):
         problems.append(f"độ dài lệch (tỉ lệ {ratio:.2f})")
 
+    rewr_nfc = unicodedata.normalize("NFC", rewritten)
     for term, fixed in subset.items():
-        if fixed not in rewritten:
+        f_nfc = unicodedata.normalize("NFC", fixed)
+        if f_nfc not in rewr_nfc:
             problems.append(f"thiếu thuật ngữ: {fixed}")
 
     orig_stripped = original.rstrip()
@@ -225,11 +238,17 @@ def apply_deterministic_fixes(
     # Phiên âm CJK có trong bảng phiên âm chuẩn
     text = auto_sanitize_cjk(text, replacements=subset)
 
-    # Thay thuật ngữ theo glossary nếu key có trong text mà fixed chưa có
+    # Thay thuật ngữ theo glossary nếu raw key có trong text mà fixed chưa có (chuẩn hóa NFC & case-insensitive)
     if subset:
+        text_nfc = unicodedata.normalize("NFC", text)
         for k, v in subset.items():
-            if k in text and v not in text:
-                text = text.replace(k, v)
+            k_nfc = unicodedata.normalize("NFC", k)
+            f_nfc = unicodedata.normalize("NFC", v)
+            if f_nfc not in text_nfc:
+                pattern = re.compile(re.escape(k_nfc), re.IGNORECASE)
+                if pattern.search(text_nfc):
+                    text_nfc = pattern.sub(f_nfc, text_nfc)
+        text = text_nfc
 
     # Gộp câu lặp lại liên tiếp:
     # - Thoại trong ngoặc kép (“...”) hoặc câu ngắn (< 15 ký tự) được phép lặp hợp lệ (tối đa repeat_max)
@@ -366,6 +385,7 @@ def rewrite_part(
     attempts: int = ATTEMPTS,
     model: str = "",
     strip_cjk_fallback: bool = False,
+    cache_heal: bool = True,
 ) -> dict:
     """Vòng tự sửa theo mức cho từng chunk: Mức 1 (deterministic) -> Mức 2 (retry prompt)
     -> Mức 3 (sentence-level) -> Fallback bản ít lỗi nhất. Tối đa `attempts` LLM calls."""
@@ -373,16 +393,33 @@ def rewrite_part(
     if key in cache:
         cached_text = cache[key]
         cached_probs = validate(part, cached_text, subset)
-        return {
-            "key": key,
-            "text": cached_text,
-            "backend": "cache",
-            "attempts": 0,
-            "calls": 0,
-            "problems": cached_probs,
-            "cached": True,
-            "tier": "cache",
-        }
+        if not cached_probs:
+            return {
+                "key": key,
+                "text": cached_text,
+                "backend": "cache",
+                "attempts": 0,
+                "calls": 0,
+                "problems": [],
+                "cached": True,
+                "tier": "cache",
+            }
+        # Cache hit mà validate trượt:
+        # Nếu cache_heal=True: coi như cache miss và chạy vòng tự sửa
+        # Nếu cache_heal=False: giữ bản cache kèm problems để QA Gate chương bắt
+        if cache_heal:
+            cache.pop(key, None)
+        else:
+            return {
+                "key": key,
+                "text": cached_text,
+                "backend": "cache",
+                "attempts": 0,
+                "calls": 0,
+                "problems": cached_probs,
+                "cached": True,
+                "tier": "cache",
+            }
 
     calls = 0
     candidates: list[dict] = []
@@ -418,9 +455,22 @@ def rewrite_part(
 
         calls += n
 
-        # Mức 1: Sửa xác định trên kết quả LLM
-        fixed_text = apply_deterministic_fixes(raw_text, original=part, subset=subset)
-        problems = validate(part, fixed_text, subset)
+        # Mức 1: Sửa xác định trên kết quả LLM (xử lý ghép dòng cho Mức 3)
+        if is_sentence_mode:
+            orig_sentences = split_sentences(part)
+            out_lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
+            if len(out_lines) == len(orig_sentences):
+                combined = "\n".join(out_lines)
+            else:
+                combined = " ".join(out_lines)
+            fixed_text = apply_deterministic_fixes(combined, original=part, subset=subset)
+            problems = validate(part, fixed_text, subset)
+            if len(out_lines) != len(orig_sentences) and abs(len(out_lines) - len(orig_sentences)) > max(1, len(orig_sentences) // 3):
+                if problems:
+                    problems.append(f"số dòng dịch Mức 3 lệch số câu (gốc {len(orig_sentences)}, trả về {len(out_lines)})")
+        else:
+            fixed_text = apply_deterministic_fixes(raw_text, original=part, subset=subset)
+            problems = validate(part, fixed_text, subset)
 
         if not problems:
             cache[key] = fixed_text
@@ -452,6 +502,9 @@ def rewrite_part(
 
     if strip_cjk_fallback:
         best_text, cjk_stripped = strip_cjk(best_text)
+
+    # Đảm bảo kết quả fallback TUYỆT ĐỐI KHÔNG được lưu vào cache
+    cache.pop(key, None)
 
     return {
         "key": key,
@@ -514,6 +567,7 @@ def rewrite_stage(payload, workdir: Path, em, providers=None, sleep=time.sleep) 
     qa_cfg = qa_cfg_from_payload(payload.get("qa"))
     fp = model_fingerprint(custom_model=ai_model)
     strip_fallback = bool(payload.get("strip_cjk_fallback", config.DEFAULT_STRIP_CJK_FALLBACK))
+    cache_heal = bool(payload.get("cache_heal", config.DEFAULT_CACHE_HEAL))
 
     em.send("stage_started", stage="rewrite")
     chapters = _chapter_dirs(workdir)
@@ -579,6 +633,7 @@ def rewrite_stage(payload, workdir: Path, em, providers=None, sleep=time.sleep) 
                     cache,
                     model=fp,
                     strip_cjk_fallback=strip_fallback,
+                    cache_heal=cache_heal,
                 )
             except RateLimited as e:
                 quota = e
@@ -609,7 +664,7 @@ def rewrite_stage(payload, workdir: Path, em, providers=None, sleep=time.sleep) 
                     message=f"chương {no} phần {i}: giữ bản gốc — {r['problems']}",
                     retryable=r["backend"] == "lỗi",
                 )
-            elif not r["cached"]:
+            elif not r["cached"] and r.get("tier") != "fallback" and not r.get("problems"):
                 save_cache_entry(cache_dir, r["key"], r["text"])
 
             out_parts.append(r["text"])

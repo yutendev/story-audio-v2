@@ -11,6 +11,7 @@ khác biệt phong cách hợp lệ (ratio có biên 0.7–1.3, lặp phải vư
 from __future__ import annotations
 
 import re
+import unicodedata
 
 from story_audio import config
 from story_audio.normalize import split_sentences
@@ -81,7 +82,19 @@ def qa_check(text: str, original: str, glossary: dict[str, str],
     if dup > cfg["repeat_max"]:
         problems.append(f"câu lặp lại ({dup} lần)")
 
-    missing = [fixed for key, fixed in glossary.items() if key in original and fixed not in text]
+    # So khớp glossary: chuẩn hóa NFC cả hai vế; so khớp case-insensitive cho key trong original
+    orig_nfc = unicodedata.normalize("NFC", original)
+    text_nfc = unicodedata.normalize("NFC", text)
+    orig_lower = orig_nfc.lower()
+
+    missing: list[str] = []
+    for key, fixed in glossary.items():
+        k_nfc = unicodedata.normalize("NFC", key)
+        f_nfc = unicodedata.normalize("NFC", fixed)
+        in_orig = (k_nfc in orig_nfc) or (k_nfc.lower() in orig_lower)
+        if in_orig:
+            if f_nfc not in text_nfc:
+                missing.append(fixed)
     if missing:
         problems.append("thiếu thuật ngữ QA: " + ", ".join(missing[:3]))
 

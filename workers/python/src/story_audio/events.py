@@ -125,7 +125,11 @@ def decode(line):
 def emit(ev, stream=None):
     """In 1 event JSONL ra stdout (mặc định) — chỉ protocol, không log."""
     out = stream if stream is not None else sys.stdout
-    out.write(encode(ev) + "\n")
+    try:
+        out.write(encode(ev) + "\n")
+    except UnicodeEncodeError:
+        # Fallback an toàn trên Windows console cp1252
+        out.write(json.dumps(validate(ev), ensure_ascii=True) + "\n")
     out.flush()
 
 
