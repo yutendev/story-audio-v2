@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "story-audio-worker"
+version = "0.1.0"
+description = "Story Audio Python worker: extraction, rewrite, TTS, packaging. Chạy như child process của Node API (master plan §2)."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    # Pin đúng theo venv đã verify trong source audit (T0.4)
+    "requests==2.34.2",
+    "beautifulsoup4==4.15.0",
+    "edge-tts==7.3.1",
+]
+
+[project.optional-dependencies]
+test = ["pytest==9.1.1"]
+
+[project.scripts]
+story-audio = "story_audio.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

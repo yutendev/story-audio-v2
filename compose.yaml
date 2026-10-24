@@ -1,0 +1,24 @@
+# Local PostgreSQL cho dev (T2.1) — chạy: docker compose up -d db
+# Yêu cầu .env (copy từ .env.example) chứa: POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DB
+# KHÔNG hard-code credential trong file này — compose đọc từ ./.env (đã gitignore).
+
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: story-audio-db
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?thiếu POSTGRES_USER trong .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?thiếu POSTGRES_PASSWORD trong .env}
+      POSTGRES_DB: ${POSTGRES_DB:?thiếu POSTGRES_DB trong .env}
+    ports:
+      - "5454:5432"   # host 5454 tránh đụng PG native nếu có
+    volumes:
+      - dbdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  dbdata:

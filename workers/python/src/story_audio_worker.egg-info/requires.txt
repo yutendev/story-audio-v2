@@ -1,0 +1,6 @@
+requests==2.34.2
+beautifulsoup4==4.15.0
+edge-tts==7.3.1
+
+[test]
+pytest==9.1.1

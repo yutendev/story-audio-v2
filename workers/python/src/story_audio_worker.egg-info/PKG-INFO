@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: story-audio-worker
+Version: 0.1.0
+Summary: Story Audio Python worker: extraction, rewrite, TTS, packaging. Chạy như child process của Node API (master plan §2).
+Requires-Python: <3.13,>=3.12
+Requires-Dist: requests==2.34.2
+Requires-Dist: beautifulsoup4==4.15.0
+Requires-Dist: edge-tts==7.3.1
+Provides-Extra: test
+Requires-Dist: pytest==9.1.1; extra == "test"

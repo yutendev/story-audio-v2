@@ -1,0 +1,2 @@
+[console_scripts]
+story-audio = story_audio.__main__:main

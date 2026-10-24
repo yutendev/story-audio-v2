@@ -1,0 +1,47 @@
+# Secrets — real values are never committed (.env.example itself IS tracked)
+.env
+.env.*
+!.env.example
+
+# Old extracted archive — read-only reference, never commit its code/venv/secrets/media
+Audio/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# Node / builds
+node_modules/
+dist/
+build/
+
+# Local database data + scratch workspace
+**/pgdata/
+*.db
+*.sqlite
+*.sqlite3
+.superpowers/
+
+# Logs
+logs/
+*.log
+
+# Worker workdirs — downloaded story text and generated assets live here only
+work/
+tmp/
+.work/
+-w
+events-seq.txt
+
+# Generated Prisma Client — regenerate bằng `prisma generate` (T2.2)
+apps/api/src/generated/
+
+# Generated media (shortcut: tiny test fixtures needing audio will need an
+# explicit "!tests/<path>" line when that task lands)
+*.mp3
+*.m4b
+*.mp4

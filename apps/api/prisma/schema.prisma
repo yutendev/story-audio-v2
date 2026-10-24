@@ -1,0 +1,185 @@
+// Story Audio API — data schema (T2.3), theo §6/§7 của Master Plan.
+// Chuẩn Prisma v7: connection URL ở prisma.config.ts; client có output riêng (gitignored).
+//
+// State machine cứng (chặn transition bất hợp lệ) nằm ở T2.5 — đây là schema + constraint.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum JobState {
+  queued
+  running
+  waiting_quota
+  needs_review
+  failed
+  canceled
+  completed
+}
+
+enum ChapterStage {
+  discovered
+  downloaded
+  normalized
+  rewritten
+  qa_passed
+  tts_done
+  verified
+  failed
+}
+
+enum ReviewState {
+  none
+  needs_review
+  approved
+}
+
+enum AssetKind {
+  source_html
+  chapter_text
+  normalized_text
+  rewritten_text
+  chapter_audio
+  m4b
+  mp4
+  thumbnail
+  description
+}
+
+enum PackageState {
+  pending
+  building
+  ready
+  failed
+}
+
+enum JobEventType {
+  stage_started
+  progress
+  chapter_status
+  artifact_ready
+  quota_wait
+  needs_review
+  error
+  final
+}
+
+model Job {
+  id              String    @id @default(cuid())
+  sourceUrl       String    @map("source_url")
+  adapter         String
+  state           JobState  @default(queued)
+  configSnapshot  Json      @default("{}") @map("config_snapshot")
+  chaptersPerBook Int       @default(20) @map("chapters_per_book")
+  notBefore       DateTime? @map("not_before")
+  claimedAt       DateTime? @map("claimed_at")
+  lastError       String?   @map("last_error")
+  startedAt       DateTime? @map("started_at")
+  endedAt         DateTime? @map("ended_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  chapters   Chapter[]
+  assets     Asset[]
+  packages   BookPackage[]
+  events     JobEvent[]
+
+  @@index([state, createdAt])
+  @@map("jobs")
+}
+
+model Chapter {
+  id           String      @id @default(cuid())
+  jobId        String      @map("job_id")
+  index        Int
+  title        String
+  sourceUrl    String      @map("source_url")
+  stageState   ChapterStage @default(discovered) @map("stage_state")
+  reviewState  ReviewState @default(none) @map("review_state")
+  textAssetId  String?     @unique @map("text_asset_id")
+  audioAssetId String?     @unique @map("audio_asset_id")
+  createdAt    DateTime    @default(now()) @map("created_at")
+  updatedAt    DateTime    @updatedAt @map("updated_at")
+
+  job     Job    @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  asset   Asset? @relation("chapter_text", fields: [textAssetId], references: [id], onDelete: SetNull)
+  audio   Asset? @relation("chapter_audio", fields: [audioAssetId], references: [id], onDelete: SetNull)
+  assets  Asset[]     @relation("chapter_assets")
+  events  JobEvent[]
+
+  @@unique([jobId, index])
+  @@index([jobId, stageState])
+  @@map("chapters")
+}
+
+model Asset {
+  id          String    @id @default(cuid())
+  jobId       String    @map("job_id")
+  chapterId   String?   @map("chapter_id")
+  packageId   String?   @map("package_id")
+  kind        AssetKind
+  objectKey   String    @map("object_key")
+  contentType String    @map("content_type")
+  size        Int       @default(0)
+  sha256      String?
+  verified    Boolean   @default(false)
+  fingerprint String?
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  job     Job          @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  chapter Chapter?     @relation("chapter_assets", fields: [chapterId], references: [id], onDelete: Cascade)
+  pkg     BookPackage? @relation("package_assets", fields: [packageId], references: [id], onDelete: Cascade)
+  // chiếu ngược từ con trỏ "active" trên Chapter (textAssetId/audioAssetId @unique → 1:1)
+  textOfChapter Chapter? @relation("chapter_text")
+  audioOfChapter Chapter? @relation("chapter_audio")
+
+  @@index([jobId, kind])
+  @@index([chapterId])
+  // (chapterId, kind) unique: mỗi chapter 1 asset/kind; chapterId NULL (asset
+  // cấp job/package) không bị chặn — Postgres coi các NULL là khác nhau.
+  @@unique([chapterId, kind])
+  @@map("assets")
+}
+
+model BookPackage {
+  id               String       @id @default(cuid())
+  jobId            String       @map("job_id")
+  sequence         Int
+  startChapter     Int          @map("start_chapter")
+  endChapter       Int          @map("end_chapter")
+  chapterCount     Int          @map("chapter_count")
+  groupingSnapshot Json         @default("{}") @map("grouping_snapshot")
+  state            PackageState @default(pending)
+  createdAt        DateTime     @default(now()) @map("created_at")
+  updatedAt        DateTime     @updatedAt @map("updated_at")
+
+  job    Job     @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  assets Asset[] @relation("package_assets")
+
+  @@unique([jobId, sequence])
+  @@map("book_packages")
+}
+
+model JobEvent {
+  id         String       @id @default(cuid())
+  jobId      String       @map("job_id")
+  chapterId  String?      @map("chapter_id")
+  seq        Int
+  eventType  JobEventType @map("event_type")
+  message    String?
+  data       Json?
+  createdAt  DateTime     @default(now()) @map("created_at")
+
+  job     Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  chapter Chapter? @relation(fields: [chapterId], references: [id], onDelete: SetNull)
+
+  @@unique([jobId, seq])
+  @@index([jobId, createdAt])
+  @@map("job_events")
+}

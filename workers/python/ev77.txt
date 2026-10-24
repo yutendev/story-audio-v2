@@ -1,0 +1,7 @@
+RC=20
+{"protocol": "1", "type": "stage_started", "seq": 0, "job_id": "t57", "stage": "rewrite"}
+{"protocol": "1", "type": "error", "seq": 1, "job_id": "t57", "message": "chương 12 trượt QA: độ dài lệch QA (tỉ lệ 0.30); có thể bị cắt cụt (câu cuối không có dấu kết)", "retryable": false}
+{"protocol": "1", "type": "chapter_status", "seq": 2, "job_id": "t57", "chapter_no": 12, "state": "rewritten"}
+{"protocol": "1", "type": "artifact_ready", "seq": 3, "job_id": "t57", "path": "chapters/0012/rewritten.txt", "kind": "rewritten_text", "checksum": "d7980f091d16445f8e70eb6a26c9713ebea232fc29497a54c1d183aa6272690a"}
+{"protocol": "1", "type": "error", "seq": 4, "job_id": "t57", "message": "lỗi xác thực/cấu hình — dừng không thử lại sau 0 request: fake: HTTP 401: key sai", "retryable": false}
+{"protocol": "1", "type": "final", "seq": 5, "job_id": "t57", "status": "failed", "summary": "lỗi xác thực/cấu hình — dừng không thử lại sau 0 request: fake: HTTP 401: key sai"}

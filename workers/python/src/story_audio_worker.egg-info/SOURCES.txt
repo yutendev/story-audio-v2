@@ -1,0 +1,10 @@
+pyproject.toml
+src/story_audio/__init__.py
+src/story_audio/__main__.py
+src/story_audio_worker.egg-info/PKG-INFO
+src/story_audio_worker.egg-info/SOURCES.txt
+src/story_audio_worker.egg-info/dependency_links.txt
+src/story_audio_worker.egg-info/entry_points.txt
+src/story_audio_worker.egg-info/requires.txt
+src/story_audio_worker.egg-info/top_level.txt
+tests/test_package.py
