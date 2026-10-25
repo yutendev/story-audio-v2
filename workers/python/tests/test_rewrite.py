@@ -644,7 +644,6 @@ def test_rewrite_qa_runs_on_cache_hit(tmp_path, capsys):
     ok = EchoProvider()
     actions.execute_job("rewrite", {}, wd, job_id="t56a", providers=[ok], sleep=_NO_SLEEP)
     # bẩn cache ĐÚNG FORMAT v2 (checksum còn hợp lệ): chèn CJK vào bản đã cache
-    # — lần sau đọc cache vẫn phải trượt QA (nội dung nát nhưng "trọn vẹn")
     for f in (wd / "rewrite-cache").glob("*.txt"):
         _cp, _sep, text = f.read_text(encoding="utf-8").partition("\n")
         poisoned = "天 " + text
@@ -653,11 +652,29 @@ def test_rewrite_qa_runs_on_cache_hit(tmp_path, capsys):
             encoding="utf-8",
         )
     fresh = EchoProvider()
+    # Mặc định Phase 1: DEFAULT_CACHE_HEAL = True → cache hit trượt validate được tự sửa
     rc = actions.execute_job(
         "rewrite", {}, wd, job_id="t56b", providers=[fresh], sleep=_NO_SLEEP
     )
-    assert rc == ExitCode.NEEDS_REVIEW
-    assert fresh.calls == 0  # mọi part đến từ cache — QA vẫn chạy trên cache hit
+    assert rc == ExitCode.SUCCESS
+    assert fresh.calls == 1  # gọi provider mới để tự sửa bản cache bị hỏng
+    final = [e for e in _events(capsys) if e["type"] == "final"][-1]
+    assert final["status"] == "success"
+
+    # Khi opt-out (cache_heal=False): giữ nguyên bản cache lỗi và báo NEEDS_REVIEW
+    poisoned_file = next(iter((wd / "rewrite-cache").glob("*.txt")))
+    _cp, _sep, text = poisoned_file.read_text(encoding="utf-8").partition("\n")
+    poisoned2 = "天 " + text
+    poisoned_file.write_text(
+        hashlib.sha256(poisoned2.encode("utf-8")).hexdigest() + "\n" + poisoned2,
+        encoding="utf-8",
+    )
+    no_heal_prov = EchoProvider()
+    rc_no_heal = actions.execute_job(
+        "rewrite", {"cache_heal": False}, wd, job_id="t56c", providers=[no_heal_prov], sleep=_NO_SLEEP
+    )
+    assert rc_no_heal == ExitCode.NEEDS_REVIEW
+    assert no_heal_prov.calls == 0
     assert any("trượt QA" in e["message"] for e in _events(capsys) if e["type"] == "error")
 
 

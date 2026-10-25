@@ -66,8 +66,8 @@ DEFAULT_QA: dict[str, float] = {
 # Sang Phase 2: Chặn cứng trước TTS sẽ kích hoạt triệt để.
 DEFAULT_STRIP_CJK_FALLBACK = False
 
-# Tự sửa khi cache hit trượt validate ở tầng stage (False để tương thích test cũ)
-DEFAULT_CACHE_HEAL = False
+# Tự sửa khi cache hit trượt validate (mặc định BẬT theo chuẩn Phase 1)
+DEFAULT_CACHE_HEAL = True
 
 # ---------------------------------------------------------
 # TTS & Audio Settings (Phase 3 & 4)
