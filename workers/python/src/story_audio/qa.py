@@ -46,8 +46,10 @@ def qa_cfg_from_payload(raw) -> dict[str, float]:
 
 
 def qa_check(text: str, original: str, glossary: dict[str, str],
-             cfg: dict[str, float] | None = None) -> list[str]:
-    """Kiểm chương hoàn chỉnh → danh sách problems; [] = đạt."""
+             cfg: dict[str, float] | None = None,
+             warnings: list[str] | None = None) -> list[str]:
+    """Kiểm chương hoàn chỉnh → danh sách problems; [] = đạt.
+    Nếu thuật ngữ chỉ lệch hoa thường ở bản dịch, ghi vào warnings (không tính là thiếu, không kích hoạt retry)."""
     cfg = {**DEFAULT_QA, **(cfg or {})}
     problems: list[str] = []
     if not text.strip():
@@ -83,19 +85,34 @@ def qa_check(text: str, original: str, glossary: dict[str, str],
         problems.append(f"câu lặp lại ({dup} lần)")
 
     # So khớp glossary: chuẩn hóa NFC cả hai vế; so khớp case-insensitive cho key trong original
+    # Phía bản dịch: nếu có từ nhưng chỉ lệch hoa thường -> chỉ cảnh báo (không tính là thiếu, không kích hoạt retry)
     orig_nfc = unicodedata.normalize("NFC", original)
     text_nfc = unicodedata.normalize("NFC", text)
     orig_lower = orig_nfc.lower()
+    text_lower = text_nfc.lower()
 
     missing: list[str] = []
+    casing_warnings: list[str] = []
     for key, fixed in glossary.items():
         k_nfc = unicodedata.normalize("NFC", key)
         f_nfc = unicodedata.normalize("NFC", fixed)
         in_orig = (k_nfc in orig_nfc) or (k_nfc.lower() in orig_lower)
         if in_orig:
-            if f_nfc not in text_nfc:
+            if f_nfc in text_nfc:
+                continue
+            elif f_nfc.lower() in text_lower:
+                casing_warnings.append(fixed)
+            else:
                 missing.append(fixed)
+
+    if casing_warnings:
+        if warnings is not None:
+            warnings.extend([f"lệch hoa thường: {w}" for w in casing_warnings])
+        else:
+            problems.append("thiếu thuật ngữ (lệch hoa thường): " + ", ".join(casing_warnings))
+
     if missing:
-        problems.append("thiếu thuật ngữ QA: " + ", ".join(missing[:3]))
+        # Báo đầy đủ danh sách thuật ngữ thiếu (bỏ giới hạn [:3])
+        problems.append("thiếu thuật ngữ QA: " + ", ".join(missing))
 
     return problems

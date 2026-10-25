@@ -97,3 +97,20 @@ def test_final_event_statuses():
         assert validate(base("final", status=status, summary="s"))["status"] == status
     with pytest.raises(ProtocolError):
         validate(base("final", status="kệ", summary="s"))
+
+
+def test_emit_fallback_on_unicode_encode_error():
+    """T1.3/Phase 1: khi stream bị lỗi mã hóa (ví dụ cp1252), emit tự động fallback sang ASCII JSON."""
+    class CP1252Stream(io.StringIO):
+        def write(self, s):
+            s.encode("cp1252")  # ném UnicodeEncodeError nếu có ký tự ngoài cp1252
+            return super().write(s)
+
+    buf = CP1252Stream()
+    ev = base("progress", stage="tts", done=1, total=2, message="Đang thu âm giọng đọc AI: Chương 12")
+    emit(ev, buf)
+    val = buf.getvalue().strip()
+    assert "\\u0110" in val  # Ký tự 'Đ' được escape thành \\u0110 an toàn
+    decoded = json.loads(val)
+    assert decoded["message"] == "Đang thu âm giọng đọc AI: Chương 12"
+

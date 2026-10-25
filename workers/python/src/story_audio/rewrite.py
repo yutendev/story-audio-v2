@@ -28,6 +28,7 @@ from story_audio.exit_codes import ExitCode
 from story_audio.normalize import (
     CJK_CHAR_RE,
     COMMON_CJK_TRANSLIT,
+    _pattern_for_key,
     auto_sanitize_cjk,
     clean_corrupted_chars,
     normalize_brackets,
@@ -86,12 +87,73 @@ def glossary_subset(text: str, glossary: dict[str, str]) -> dict[str, str]:
     return res
 
 
+def mask_glossary_tokens(
+    text: str,
+    subset: dict[str, str],
+) -> tuple[str, dict[str, str]]:
+    """Thay thuật ngữ glossary trước khi gửi LLM bằng token giữ chỗ.
+    Đảm bảo ranh giới từ an toàn (chữ Latin/Việt vs CJK) và chuẩn hóa NFC.
+    Trả về (text_masked, token_map) với token_map = {token: fixed_nfc}."""
+    if not subset or not text:
+        return text, {}
+
+    text_nfc = unicodedata.normalize("NFC", text)
+    token_map: dict[str, str] = {}
+    sorted_items = sorted(
+        subset.items(),
+        key=lambda kv: len(unicodedata.normalize("NFC", kv[0])),
+        reverse=True,
+    )
+
+    idx = 0
+    for raw_k, fixed_v in sorted_items:
+        k_nfc = unicodedata.normalize("NFC", raw_k)
+        f_nfc = unicodedata.normalize("NFC", fixed_v)
+        pattern = re.compile(_pattern_for_key(k_nfc), re.IGNORECASE)
+        if pattern.search(text_nfc):
+            token = f"[[GLOSS_TOKEN_{idx}]]"
+            text_nfc = pattern.sub(token, text_nfc)
+            token_map[token] = f_nfc
+            idx += 1
+
+    return text_nfc, token_map
+
+
+def restore_glossary_tokens(text: str, token_map: dict[str, str]) -> str:
+    """Khôi phục token giữ chỗ [[GLOSS_TOKEN_xx]] về thuật ngữ chuẩn (NFC)."""
+    if not token_map or not text:
+        return text
+    res = text
+    for token, fixed in token_map.items():
+        res = res.replace(token, fixed)
+    return unicodedata.normalize("NFC", res)
+
+
+def pre_replace_glossary(text: str, subset: dict[str, str]) -> str:
+    """Thay trực tiếp thuật ngữ glossary trước khi gửi LLM (giữ nguyên ranh giới từ và NFC)."""
+    if not subset or not text:
+        return text
+    text_nfc = unicodedata.normalize("NFC", text)
+    sorted_items = sorted(
+        subset.items(),
+        key=lambda kv: len(unicodedata.normalize("NFC", kv[0])),
+        reverse=True,
+    )
+    for raw_k, fixed_v in sorted_items:
+        k_nfc = unicodedata.normalize("NFC", raw_k)
+        f_nfc = unicodedata.normalize("NFC", fixed_v)
+        pattern = re.compile(_pattern_for_key(k_nfc), re.IGNORECASE)
+        text_nfc = pattern.sub(f_nfc, text_nfc)
+    return unicodedata.normalize("NFC", text_nfc)
+
+
 def build_prompt(
     part: str,
     subset: dict[str, str],
     prev_tail: str,
     previous_errors: list[str] | None = None,
     sentence_mode: bool = False,
+    token_mode: bool = False,
 ) -> str:
     lines = [
         "Bạn là biên tập viên người Việt, viết lại truyện convert (bản dịch Hán Việt rời rạc, câu cứng) "
@@ -108,6 +170,8 @@ def build_prompt(
         "- Giữ nguyên cách xuống đoạn: mỗi đoạn gốc tương ứng một đoạn, phân cách bằng dòng trống.",
         "- Chỉ trả về văn bản đã viết lại, không thêm bất kỳ lời dẫn hay giải thích nào khác.",
     ]
+    if token_mode:
+        lines.append("- Giữ nguyên vẹn các mã định danh dạng [[GLOSS_TOKEN_xx]] tại đúng vị trí trong câu (không dịch, không đổi tên).")
     if previous_errors:
         lines += [
             "",
@@ -177,6 +241,29 @@ def validate(
     if not (config.MIN_RATIO <= ratio <= config.MAX_RATIO):
         problems.append(f"độ dài lệch (tỉ lệ {ratio:.2f})")
 
+    # Đo độ phủ nội dung ở tầng chunk
+    # 1. Số câu: bản gốc >= 3 câu mà bản dịch bị thiếu hụt quá nửa
+    orig_s = split_sentences(original)
+    rewr_s = split_sentences(rewritten)
+    if len(orig_s) >= 3:
+        min_expected_s = max(1, int(len(orig_s) * config.MIN_SENTENCE_RATIO))
+        if len(rewr_s) < min_expected_s:
+            problems.append(f"thiếu câu (gốc {len(orig_s)} câu, dịch {len(rewr_s)} câu)")
+
+    # 2. Số liệu (digits): số liệu của nguồn phải tương ứng với đầu ra
+    orig_nums = set(re.findall(r"\b\d+\b", original))
+    if orig_nums:
+        rewr_lower = rewritten.lower()
+        missing_nums = []
+        for num in orig_nums:
+            if num in rewr_lower:
+                continue
+            if num in config.DIGIT_WORDS and any(w in rewr_lower for w in config.DIGIT_WORDS[num]):
+                continue
+            missing_nums.append(num)
+        if missing_nums:
+            problems.append(f"thiếu số liệu: {', '.join(sorted(missing_nums))}")
+
     rewr_nfc = unicodedata.normalize("NFC", rewritten)
     for term, fixed in subset.items():
         f_nfc = unicodedata.normalize("NFC", fixed)
@@ -245,7 +332,7 @@ def apply_deterministic_fixes(
             k_nfc = unicodedata.normalize("NFC", k)
             f_nfc = unicodedata.normalize("NFC", v)
             if f_nfc not in text_nfc:
-                pattern = re.compile(re.escape(k_nfc), re.IGNORECASE)
+                pattern = re.compile(_pattern_for_key(k_nfc), re.IGNORECASE)
                 if pattern.search(text_nfc):
                     text_nfc = pattern.sub(f_nfc, text_nfc)
         text = text_nfc
@@ -427,12 +514,15 @@ def rewrite_part(
 
     for attempt in range(1, attempts + 1):
         is_sentence_mode = (attempt >= 3 and len(split_sentences(part)) > 1)
+        # Chuẩn bị bản gốc với token giữ chỗ glossary trước khi gửi LLM
+        masked_part, token_map = mask_glossary_tokens(part, subset)
         prompt = build_prompt(
-            part,
+            masked_part,
             subset,
             prev_tail,
             previous_errors=prev_errors if attempt > 1 else None,
             sentence_mode=is_sentence_mode,
+            token_mode=bool(token_map),
         )
 
         try:
@@ -455,10 +545,13 @@ def rewrite_part(
 
         calls += n
 
+        # Khôi phục token giữ chỗ trước tiên
+        restored_text = restore_glossary_tokens(raw_text, token_map)
+
         # Mức 1: Sửa xác định trên kết quả LLM (xử lý ghép dòng cho Mức 3)
         if is_sentence_mode:
             orig_sentences = split_sentences(part)
-            out_lines = [l.strip() for l in raw_text.splitlines() if l.strip()]
+            out_lines = [l.strip() for l in restored_text.splitlines() if l.strip()]
             if len(out_lines) == len(orig_sentences):
                 combined = "\n".join(out_lines)
             else:
@@ -469,7 +562,7 @@ def rewrite_part(
                 if problems:
                     problems.append(f"số dòng dịch Mức 3 lệch số câu (gốc {len(orig_sentences)}, trả về {len(out_lines)})")
         else:
-            fixed_text = apply_deterministic_fixes(raw_text, original=part, subset=subset)
+            fixed_text = apply_deterministic_fixes(restored_text, original=part, subset=subset)
             problems = validate(part, fixed_text, subset)
 
         if not problems:

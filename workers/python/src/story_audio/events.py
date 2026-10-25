@@ -11,6 +11,13 @@ import json
 import re
 import sys
 
+# Đảm bảo stdout dùng UTF-8 trên Windows nếu có thể
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 PROTOCOL_VERSION = "1"
 
 EVENT_TYPES = (

@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from story_audio.normalize import auto_sanitize_cjk, split_raw
+from story_audio.normalize import auto_sanitize_cjk, split_raw, split_sentences
 from story_audio.rewrite import (
     chunk_text,
     glossary_subset,
@@ -11,18 +11,22 @@ from story_audio.providers import LLMClient, Provider
 from story_audio.qa import qa_check
 
 class DraftLegacyProvider(Provider):
-    """Provider trả về bản dịch draft từ nguồn cũ (viet_lai) để kiểm chứng
-    khả năng tự sửa Mức 1 (sửa xác định thuật ngữ, dấu câu, ngoặc) và Mức 2/3."""
+    """Provider trả về bản dịch draft tương ứng với đúng chunk nguồn được gán.
+    Tuyệt đối không tự tăng index khi retry để không trả nội dung của chunk khác."""
     name = "draft_legacy"
 
-    def __init__(self, legacy_chunks: list[str]):
-        self.legacy_chunks = legacy_chunks
-        self.idx = 0
+    def __init__(self):
+        self.current_draft = ""
+
+    def set_current_draft(self, draft: str):
+        self.current_draft = draft
 
     def complete(self, prompt: str, system: str = "") -> str:
-        text = self.legacy_chunks[self.idx % len(self.legacy_chunks)]
-        self.idx += 1
-        return text
+        # Nếu đang ở chế độ tách câu (Mức 3): trả về các câu từ đúng draft này phân cách bằng \n
+        if "chế độ câu (Mức 3)" in prompt:
+            sentences = [s.strip() for s in split_sentences(self.current_draft) if s.strip()]
+            return "\n".join(sentences)
+        return self.current_draft
 
 def run_trial():
     nguon_dir = Path("Audio/nguon/xich-tam-tuan-thien")
@@ -48,7 +52,7 @@ def run_trial():
         t_old, p_old = split_raw(rewr_old)
         old_chunks = chunk_text([t_old] + p_old)
 
-        provider = DraftLegacyProvider(old_chunks)
+        provider = DraftLegacyProvider()
         client = LLMClient([provider])
         cache = {}
 
@@ -58,8 +62,9 @@ def run_trial():
         prev_tail = ""
 
         for idx, chunk in enumerate(chunks):
-            # Cung cấp draft cũ tương ứng cho lượt gọi này
-            provider.idx = min(idx, len(old_chunks) - 1)
+            # Cung cấp draft cũ tương ứng cho lượt gọi này (không nhảy sang chunk khác khi retry)
+            old_idx = min(int(idx * len(old_chunks) / len(chunks)), len(old_chunks) - 1)
+            provider.set_current_draft(old_chunks[old_idx])
             subset = glossary_subset(chunk, glossary)
             res = rewrite_part(chunk, subset, prev_tail, client, cache, attempts=3)
             

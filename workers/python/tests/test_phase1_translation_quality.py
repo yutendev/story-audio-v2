@@ -446,3 +446,114 @@ def test_requirement5_tier3_sentence_line_mismatch_handling():
     assert "Câu thứ ba kết thúc trọn vẹn." in r["text"]
 
 
+# =====================================================================
+# PHASE 1 PHẢN HỒI BỔ SUNG: Item 3, 4, 5
+# =====================================================================
+
+
+def test_item3_qa_check_case_difference_warning():
+    """Item 3: qa.py: bản dịch lệch hoa thường chỉ ghi warning, không kích hoạt retry (problems = [])."""
+    orig = "Khâu Cát cẩn thận thưa: Lý nguyên soái cùng Định Viễn Hầu vừa tới."
+    # Bản dịch dùng 'Định Viễn Hầu' trong khi glossary yêu cầu 'Định Viễn hầu'
+    trans = "Khâu Cát cẩn thận thưa: Lý nguyên soái cùng Định Viễn Hầu vừa tới nơi."
+    glossary = {"Định Viễn Hầu": "Định Viễn hầu"}
+    warnings: list[str] = []
+    probs = qa_check(trans, orig, glossary, warnings=warnings)
+    assert probs == []
+    assert any("lệch hoa thường: Định Viễn hầu" in w for w in warnings)
+
+
+def test_item4_glossary_pre_replace_and_token_restore_when_llm_changes_name():
+    """Item 4: Thay thuật ngữ glossary trước khi gửi LLM và khôi phục token.
+    LLM mock cố tình đổi tên nhân vật, kết quả vẫn ra đúng tên glossary chuẩn."""
+    part = "Khương Không Lo chậm rãi bước ra từ trong bóng tối, nhìn về phía chân trời xa xôi."
+    subset = {"Khương Không Lo": "Khương Vô Ưu"}
+
+    # Mock LLM mô phỏng trường hợp LLM cố tình đổi tên nhân vật khác (ví dụ: 'Trương Vô Kỵ' hoặc 'Khương Vô Lượng')
+    # nhưng vì pipeline đã mã hóa token giữ chỗ [[GLOSS_TOKEN_0]], LLM giữ token và dịch câu xuôi
+    class RenamingMockProvider:
+        name = "mock_renaming"
+
+        def complete(self, prompt: str, system: str = "") -> str:
+            # Kiểm chứng prompt đã được bảo vệ bằng token giữ chỗ
+            assert "[[GLOSS_TOKEN_0]]" in prompt
+            # LLM dịch văn xuôi tự nhiên xung quanh token
+            return "[[GLOSS_TOKEN_0]] chậm rãi bước ra từ bóng tối mịt mùng, ngước nhìn về phía chân trời xa xăm."
+
+    client = LLMClient([RenamingMockProvider()])
+    cache: dict[str, str] = {}
+
+    res = rewrite_part(part, subset, "", client, cache)
+    assert res["problems"] == []
+    # Kết quả cuối cùng BẮT BUỘC chứa đúng tên chuẩn 'Khương Vô Ưu'
+    assert "Khương Vô Ưu" in res["text"]
+    assert "Khương Không Lo" not in res["text"]
+    assert "[[GLOSS_TOKEN_0]]" not in res["text"]
+
+
+def test_item5_content_coverage_sentences_and_digits_and_retry_from_original_chunk():
+    """Item 5: Đo độ phủ nội dung ở tầng chunk: số câu, số liệu; chunk thiếu câu gọi lại từ BẢN GỐC."""
+    orig = (
+        "Trận chiến diễn ra tại đỉnh núi cao 2850 trượng. "
+        "Quân số tham chiến lên tới 500 vạn binh mã. "
+        "Sau ba ngày ba đêm kịch chiến, thế cục ngã ngũ. "
+        "Toàn bộ kẻ địch đều bị tiêu diệt sạch sẽ."
+    )
+    subset = {}
+
+    # 1. Kiểm tra validate: thiếu câu (> 50% số câu gốc)
+    incomplete_draft = "Trận chiến diễn ra rất ác liệt tại đỉnh núi cao 2850 trượng."
+    probs_incomplete = validate(orig, incomplete_draft, subset)
+    assert any("thiếu câu" in p for p in probs_incomplete)
+
+    # 2. Kiểm tra validate: thiếu số liệu (ví dụ thiếu '2850' hoặc '500')
+    draft_missing_nums = (
+        "Trận chiến diễn ra tại đỉnh núi cao vời vợi. "
+        "Quân số tham chiến đông đảo vô số kể. "
+        "Sau nhiều ngày kịch chiến, thế cục ngã ngũ. "
+        "Toàn bộ kẻ địch đều bị tiêu diệt sạch sẽ."
+    )
+    probs_missing_nums = validate(orig, draft_missing_nums, subset)
+    assert any("thiếu số liệu" in p for p in probs_missing_nums)
+    assert any("2850" in p or "500" in p for p in probs_missing_nums)
+
+    # Số nhỏ như '3' được dịch thành 'ba' không bị báo thiếu số liệu
+    draft_with_words = (
+        "Trận chiến diễn ra tại đỉnh núi cao 2850 trượng. "
+        "Quân số tham chiến lên tới 500 vạn binh mã. "
+        "Sau ba ngày kịch chiến, thế cục đã ngã ngũ. "
+        "Toàn bộ kẻ địch đều bị tiêu diệt sạch sẽ."
+    )
+    assert not any("thiếu số liệu" in p for p in validate(orig, draft_with_words, subset))
+
+    # 3. Kiểm tra retry: chunk thiếu câu phải được gọi lại từ BẢN GỐC (chứa đủ 2850 và 500 vạn)
+    prompts_received = []
+
+    class CapturingProvider:
+        name = "capturing"
+        calls = 0
+
+        def complete(self, prompt: str, system: str = "") -> str:
+            self.calls += 1
+            prompts_received.append(prompt)
+            if self.calls == 1:
+                # Lần 1 trả về thiếu câu
+                return incomplete_draft
+            # Lần 2 sửa lại đầy đủ
+            return draft_with_words
+
+    client = LLMClient([CapturingProvider()])
+    cache: dict[str, str] = {}
+
+    res = rewrite_part(orig, subset, "", client, cache, attempts=2)
+    assert res["tier"] == "tier2"
+    assert res["problems"] == []
+
+    # Kiểm chứng: Lần gọi thứ 2 gửi prompt chứa BẢN GỐC (chứa '2850 trượng' và '500 vạn')
+    assert len(prompts_received) == 2
+    assert "2850 trượng" in prompts_received[1]
+    assert "500 vạn binh mã" in prompts_received[1]
+    assert "LƯU Ý QUAN TRỌNG" in prompts_received[1]
+
+
+

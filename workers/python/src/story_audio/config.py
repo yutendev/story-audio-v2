@@ -46,6 +46,21 @@ PROMPT_LEAK_MARKERS = (
 MIN_RATIO = 0.7
 MAX_RATIO = 1.3
 QUOTE_DEVIATION_TOLERANCE = 0.25
+MIN_SENTENCE_RATIO = 0.5  # Tỉ lệ số câu đầu ra / số câu gốc tối thiểu (khi gốc >= 3 câu)
+
+DIGIT_WORDS: dict[str, list[str]] = {
+    "1": ["1", "một"],
+    "2": ["2", "hai"],
+    "3": ["3", "ba"],
+    "4": ["4", "bốn", "tư"],
+    "5": ["5", "năm"],
+    "6": ["6", "sáu"],
+    "7": ["7", "bảy"],
+    "8": ["8", "tám"],
+    "9": ["9", "chín"],
+    "10": ["10", "mười"],
+}
+
 
 # ---------------------------------------------------------
 # QA Gate Chương (Default Thresholds)
