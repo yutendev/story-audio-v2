@@ -463,6 +463,15 @@ def save_cache_entry(cache_dir: Path, key: str, text: str) -> None:
     P.atomic_write(cache_dir / f"{key}.txt", f"{cp}\n{text}")
 
 
+def strip_cjk_detailed(text: str) -> tuple[str, int, list[dict]]:
+    """Xóa triệt để mọi ký tự CJK còn lại, ghi nhận số lượng và danh sách ký tự kèm vị trí."""
+    matches = [{"char": m.group(), "pos": m.start()} for m in CJK_CHAR_RE.finditer(text)]
+    count = len(matches)
+    cleaned = CJK_CHAR_RE.sub("", text)
+    cleaned = re.sub(r"[ \t]+", " ", cleaned)
+    return cleaned, count, matches
+
+
 def rewrite_part(
     part: str,
     subset: dict[str, str],
@@ -490,6 +499,7 @@ def rewrite_part(
                 "problems": [],
                 "cached": True,
                 "tier": "cache",
+                "cjk_stripped_chars": [],
             }
         # Cache hit mà validate trượt:
         # Nếu cache_heal=True: coi như cache miss và chạy vòng tự sửa
@@ -506,6 +516,7 @@ def rewrite_part(
                 "problems": cached_probs,
                 "cached": True,
                 "tier": "cache",
+                "cjk_stripped_chars": [],
             }
 
     calls = 0
@@ -535,12 +546,13 @@ def rewrite_part(
             return {
                 "key": key,
                 "text": part,
-                "backend": "lỗi",
+                "backend": "source_original",
                 "attempts": attempt,
                 "calls": calls,
                 "problems": [str(e)],
                 "cached": False,
                 "tier": "error",
+                "cjk_stripped_chars": [],
             }
 
         calls += n
@@ -577,6 +589,7 @@ def rewrite_part(
                 "problems": [],
                 "cached": False,
                 "tier": tier_name,
+                "cjk_stripped_chars": [],
             }
 
         candidates.append({
@@ -592,9 +605,10 @@ def rewrite_part(
     best_text = best["text"]
     best_probs = list(best["problems"])
     cjk_stripped = 0
+    cjk_stripped_chars: list[dict] = []
 
     if strip_cjk_fallback:
-        best_text, cjk_stripped = strip_cjk(best_text)
+        best_text, cjk_stripped, cjk_stripped_chars = strip_cjk_detailed(best_text)
 
     # Đảm bảo kết quả fallback TUYỆT ĐỐI KHÔNG được lưu vào cache
     cache.pop(key, None)
@@ -602,13 +616,14 @@ def rewrite_part(
     return {
         "key": key,
         "text": best_text,
-        "backend": "gốc",
+        "backend": "best_candidate",
         "attempts": attempts,
         "calls": calls,
         "problems": best_probs,
         "cached": False,
         "tier": "fallback",
         "cjk_stripped": cjk_stripped,
+        "cjk_stripped_chars": cjk_stripped_chars,
     }
 
 
@@ -704,6 +719,7 @@ def rewrite_stage(payload, workdir: Path, em, providers=None, sleep=time.sleep) 
             continue
 
         out_parts: list[str] = []
+        chapter_results: list[dict] = []
         prev_tail = ""
         chapter_stats = {
             "chapter_no": no,
@@ -735,6 +751,7 @@ def rewrite_stage(payload, workdir: Path, em, providers=None, sleep=time.sleep) 
                 auth_err = e
                 break
 
+            chapter_results.append(r)
             total_calls += r["calls"]
             tier = r.get("tier", "unknown")
             if tier == "tier1":
@@ -747,15 +764,15 @@ def rewrite_stage(payload, workdir: Path, em, providers=None, sleep=time.sleep) 
                 chapter_stats["fallback_count"] += 1
             chapter_stats["cjk_stripped_count"] += r.get("cjk_stripped", 0)
 
-            if r["backend"] in ("gốc", "lỗi"):
-                if r["backend"] == "lỗi":
+            if r["backend"] in ("best_candidate", "source_original"):
+                if r["backend"] == "source_original":
                     net_fallback += 1
                 else:
                     val_fallback += 1
                 em.send(
                     "error",
-                    message=f"chương {no} phần {i}: giữ bản gốc — {r['problems']}",
-                    retryable=r["backend"] == "lỗi",
+                    message=f"chương {no} phần {i}: giữ bản dự phòng — {r['problems']}",
+                    retryable=r["backend"] == "source_original",
                 )
             elif not r["cached"] and r.get("tier") != "fallback" and not r.get("problems"):
                 save_cache_entry(cache_dir, r["key"], r["text"])
@@ -784,8 +801,85 @@ def rewrite_stage(payload, workdir: Path, em, providers=None, sleep=time.sleep) 
         dst = d / "rewritten.txt"
         P.atomic_write(dst, content)
 
-        # Lưu qa_report của chương
+        # Tạo metadata cho từng chunk và sidecar rewritten.chunks.json
+        chunks_meta = []
+        offset = len(title) + 2
+        tier_counts = {"tier1": 0, "tier2": 0, "tier3": 0, "fallback": 0, "cache": 0, "error": 0}
+        severity_counts = {"ok": 0, "formatting": 0, "semantic": 0, "fatal": 0}
+        fallback_by_severity: dict[str, list[int]] = {"formatting": [], "semantic": [], "fatal": []}
+
+        for idx, (p_text, r) in enumerate(zip(out_parts, chapter_results)):
+            char_start = offset
+            char_end = offset + len(p_text)
+            offset = char_end + 2
+
+            tier = r.get("tier", "unknown")
+            tier_counts[tier] = tier_counts.get(tier, 0) + 1
+
+            problems = list(r.get("problems", []))
+
+            # Xác định severity của chunk
+            if r.get("backend") == "source_original" or any("CJK" in prob for prob in problems):
+                severity = "fatal"
+            elif problems:
+                severities = [config.get_error_severity(prob) for prob in problems]
+                if "fatal" in severities:
+                    severity = "fatal"
+                elif "semantic" in severities:
+                    severity = "semantic"
+                elif "formatting" in severities:
+                    severity = "formatting"
+                else:
+                    severity = "semantic"
+            else:
+                severity = "ok"
+
+            severity_counts[severity] = severity_counts.get(severity, 0) + 1
+            if tier == "fallback":
+                if severity in fallback_by_severity:
+                    fallback_by_severity[severity].append(idx)
+
+            chunk_sha = hashlib.sha256(p_text.encode("utf-8")).hexdigest()
+            chunks_meta.append({
+                "index": idx,
+                "tier": tier,
+                "backend": r.get("backend", ""),
+                "severity": severity,
+                "remaining_errors": problems,
+                "cjk_stripped_chars": r.get("cjk_stripped_chars", []),
+                "char_start": char_start,
+                "char_end": char_end,
+                "sha256": chunk_sha,
+            })
+
+        total_chunks = len(chunks_meta)
+        semantic_ratio = (severity_counts["semantic"] / total_chunks) if total_chunks > 0 else 0.0
+        if severity_counts["fatal"] > 0:
+            chapter_status = "blocked"
+        elif semantic_ratio > config.MAX_FALLBACK_RATIO:
+            chapter_status = "needs_review"
+        else:
+            chapter_status = "ok"
+
+        sidecar_data = {
+            "schema_version": "1.0",
+            "chapter_no": no,
+            "text_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            "total_chunks": total_chunks,
+            "tier_counts": tier_counts,
+            "severity_counts": severity_counts,
+            "semantic_fallback_ratio": round(semantic_ratio, 4),
+            "chapter_status": chapter_status,
+            "chunks": chunks_meta,
+        }
+        sidecar_path = d / "rewritten.chunks.json"
+        P.atomic_write(sidecar_path, json.dumps(sidecar_data, ensure_ascii=False, indent=2))
+
+        # Lưu qa_report của chương (tương thích ngược)
         chapter_stats["qa_problems"] = qa_probs
+        chapter_stats["chapter_status"] = chapter_status
+        chapter_stats["severity_counts"] = severity_counts
+        chapter_stats["fallback_chunks_by_severity"] = fallback_by_severity
         qa_report["chapters"].append(chapter_stats)
         P.atomic_write(d / "qa_report.json", json.dumps(chapter_stats, ensure_ascii=False, indent=2))
 
@@ -826,7 +920,7 @@ def rewrite_stage(payload, workdir: Path, em, providers=None, sleep=time.sleep) 
 
     summary = f"{processed} chương rewritten; {total_calls} request"
     if val_fallback:
-        summary += f"; {val_fallback} phần giữ bản gốc cần duyệt"
+        summary += f"; {val_fallback} phần fallback cần duyệt"
     if qa_failed:
         summary += f"; {qa_failed} chương trượt QA"
     if skipped:
@@ -839,3 +933,46 @@ def rewrite_stage(payload, workdir: Path, em, providers=None, sleep=time.sleep) 
         return ExitCode.NEEDS_REVIEW
     em.send("final", status="success", summary=summary)
     return ExitCode.SUCCESS
+
+
+def verify_chunks_sidecar(chapter_dir: Path) -> tuple[bool, str]:
+    """Kiểm tra tính toàn vẹn giữa rewritten.txt và rewritten.chunks.json.
+
+    Trả về (True, "OK") nếu toàn vẹn; ngược lại trả về (False, "lý do").
+    """
+    text_path = chapter_dir / "rewritten.txt"
+    sidecar_path = chapter_dir / "rewritten.chunks.json"
+    if not text_path.is_file():
+        return False, f"Thiếu file {text_path.name}"
+    if not sidecar_path.is_file():
+        return False, f"Thiếu file {sidecar_path.name}"
+
+    try:
+        content = text_path.read_text(encoding="utf-8")
+        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        return False, f"Lỗi đọc file sidecar hoặc text: {e}"
+
+    # 1. Kiểm tra sha256 toàn bộ văn bản
+    actual_text_sha = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    if actual_text_sha != sidecar.get("text_sha256"):
+        return False, f"Hash toàn văn bản không khớp: {actual_text_sha} != {sidecar.get('text_sha256')}"
+
+    # 2. Kiểm tra sha256 từng chunk slice
+    chunks = sidecar.get("chunks", [])
+    for chunk in chunks:
+        idx = chunk.get("index")
+        start = chunk.get("char_start", 0)
+        end = chunk.get("char_end", 0)
+        expected_sha = chunk.get("sha256")
+
+        if start < 0 or end > len(content) or start > end:
+            return False, f"Chunk {idx} vị trí [{start}:{end}] vượt biên văn bản (len={len(content)})"
+
+        chunk_slice = content[start:end]
+        actual_chunk_sha = hashlib.sha256(chunk_slice.encode("utf-8")).hexdigest()
+        if actual_chunk_sha != expected_sha:
+            return False, f"Chunk {idx} hash không khớp slice văn bản: {actual_chunk_sha} != {expected_sha}"
+
+    return True, "OK"
+

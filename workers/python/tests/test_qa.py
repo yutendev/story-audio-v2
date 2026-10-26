@@ -68,6 +68,26 @@ def test_qa_glossary_mismatch():
     assert any("thiếu thuật ngữ QA" in p for p in qa_check(missing, ORIG, G))
 
 
+def test_qa_glossary_all_missing_terms_reported_no_limit():
+    """Kiểm chứng bỏ giới hạn [:3]: khi thiếu >= 4 thuật ngữ, toàn bộ phải được báo."""
+    orig = "A Di Đà, Nhiên Dạ, Chấp Địa Tạng, Khương Vô Ưu cùng bước vào."
+    # Bản dịch thiếu cả 4 thuật ngữ
+    text = "Hắn bước vào đại điện một mình, không thấy ai khác xung quanh."
+    glossary = {
+        "A Di Đà": "A Di Đà",
+        "Nhiên Dạ": "Nhiên Dạ",
+        "Chấp Địa Tạng": "Chấp Địa Tạng",
+        "Khương Vô Ưu": "Khương Vô Ưu",
+    }
+    probs = qa_check(text, orig, glossary)
+    missing_prob = next((p for p in probs if "thiếu thuật ngữ QA" in p), None)
+    assert missing_prob is not None
+    assert "A Di Đà" in missing_prob
+    assert "Nhiên Dạ" in missing_prob
+    assert "Chấp Địa Tạng" in missing_prob
+    assert "Khương Vô Ưu" in missing_prob
+
+
 def test_qa_cfg_coercion_rejects_junk():
     cfg = qa_cfg_from_payload(
         {"cjk_max": "5", "repeat_max": True, "min_ratio": 0.5, "max_ratio": 9, "lạ": 1}

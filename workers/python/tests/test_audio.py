@@ -14,11 +14,35 @@ from story_audio.exit_codes import ExitCode
 from story_audio.rewrite import chunk_text
 
 
-def _seed_rewritten(wd, no, title, paras):
+def _seed_sidecar(wd, no, text, status="ok", corrupt_hash=False):
+    d = wd / "chapters" / f"{no:04d}"
+    d.mkdir(parents=True, exist_ok=True)
+    text_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    if corrupt_hash:
+        text_sha = "0" * 64
+    data = {
+        "schema_version": "1.0",
+        "chapter_no": no,
+        "text_sha256": text_sha,
+        "total_chunks": 1,
+        "chapter_status": status,
+        "chunks": [{
+            "index": 0,
+            "char_start": 0,
+            "char_end": len(text),
+            "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest() if not corrupt_hash else "0" * 64,
+        }],
+    }
+    (d / "rewritten.chunks.json").write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _seed_rewritten(wd, no, title, paras, write_sidecar=True):
     d = wd / "chapters" / f"{no:04d}"
     d.mkdir(parents=True, exist_ok=True)
     body = title + "\n\n" + "\n\n".join(paras) + "\n"
     (d / "rewritten.txt").write_text(body, encoding="utf-8")
+    if write_sidecar:
+        _seed_sidecar(wd, no, body, status="ok")
     return body
 
 
@@ -251,3 +275,77 @@ def test_live_tts_smoke(tmp_path, capsys):
     rc = tts_mod.tts_stage({}, wd, actions._Emitter("t61live"))
     assert rc == ExitCode.SUCCESS
     assert (wd / "chapters" / "0012" / "audio.mp3").stat().st_size > 0
+
+
+def test_t1_tts_rejects_blocked_chapter(tmp_path, capsys, monkeypatch):
+    _no_ffmpeg(monkeypatch)
+    wd = tmp_path / "work"
+    wd.mkdir()
+    text = _seed_rewritten(wd, 1, "Chương 1", ["Nội dung chương một."])
+    _seed_sidecar(wd, 1, text, status="blocked")
+    calls = []
+    em = actions._Emitter("t1")
+    rc = tts_mod.tts_stage({}, wd, em, engine=fake_engine(calls))
+    assert rc != ExitCode.SUCCESS
+    evs = _events(capsys)
+    statuses = [e for e in evs if e["type"] == "chapter_status"]
+    assert any(s["chapter_no"] == 1 and s["state"] == "failed" for s in statuses)
+    assert not (wd / "chapters" / "0001" / "audio.mp3").exists()
+    assert len(calls) == 0
+
+
+def test_t2_tts_rejects_needs_review_without_flag(tmp_path, capsys, monkeypatch):
+    _no_ffmpeg(monkeypatch)
+    wd = tmp_path / "work"
+    wd.mkdir()
+    text = _seed_rewritten(wd, 2, "Chương 2", ["Nội dung chương hai."])
+    _seed_sidecar(wd, 2, text, status="needs_review")
+    calls = []
+    em = actions._Emitter("t2")
+    rc = tts_mod.tts_stage({}, wd, em, engine=fake_engine(calls))
+    assert rc != ExitCode.SUCCESS
+    evs = _events(capsys)
+    statuses = [e for e in evs if e["type"] == "chapter_status"]
+    assert any(s["chapter_no"] == 2 and s["state"] == "failed" for s in statuses)
+    assert not (wd / "chapters" / "0002" / "audio.mp3").exists()
+    assert len(calls) == 0
+
+
+def test_t3_tts_allows_needs_review_with_flag(tmp_path, capsys, monkeypatch):
+    _no_ffmpeg(monkeypatch)
+    wd = tmp_path / "work"
+    wd.mkdir()
+    text = _seed_rewritten(wd, 3, "Chương 3", ["Nội dung chương ba."])
+    _seed_sidecar(wd, 3, text, status="needs_review")
+    calls = []
+    em = actions._Emitter("t3")
+    rc = tts_mod.tts_stage({"allow_fallback_tts": True}, wd, em, engine=fake_engine(calls))
+    assert rc == ExitCode.SUCCESS
+    evs = _events(capsys)
+    statuses = [e for e in evs if e["type"] == "chapter_status"]
+    assert any(s["chapter_no"] == 3 and s["state"] == "tts_done" for s in statuses)
+    assert (wd / "chapters" / "0003" / "audio.mp3").stat().st_size > 0
+    assert len(calls) > 0
+
+
+def test_t4_tts_rejects_missing_or_corrupt_sidecar(tmp_path, capsys, monkeypatch):
+    _no_ffmpeg(monkeypatch)
+    wd = tmp_path / "work"
+    wd.mkdir()
+    # Chương 4: thiếu sidecar hoàn toàn
+    _seed_rewritten(wd, 4, "Chương 4", ["Nội dung chương bốn."], write_sidecar=False)
+    # Chương 5: có sidecar nhưng hash lệch
+    text5 = _seed_rewritten(wd, 5, "Chương 5", ["Nội dung chương năm."])
+    _seed_sidecar(wd, 5, text5, status="ok", corrupt_hash=True)
+    calls = []
+    em = actions._Emitter("t4")
+    rc = tts_mod.tts_stage({}, wd, em, engine=fake_engine(calls))
+    assert rc != ExitCode.SUCCESS
+    evs = _events(capsys)
+    statuses = [e for e in evs if e["type"] == "chapter_status"]
+    assert any(s["chapter_no"] == 4 and s["state"] == "failed" for s in statuses)
+    assert any(s["chapter_no"] == 5 and s["state"] == "failed" for s in statuses)
+    assert not (wd / "chapters" / "0004" / "audio.mp3").exists()
+    assert not (wd / "chapters" / "0005" / "audio.mp3").exists()
+    assert len(calls) == 0
+

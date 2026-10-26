@@ -190,6 +190,51 @@ class ScriptedProvider:
         return "Văn bản mặc định an toàn."
 
 
+class SelfHealingMockProvider:
+    """Mock Provider phản hồi có điều kiện dựa trên nội dung prompt retry (BƯỚC 2).
+    - Lượt 1: luôn trả draft lỗi (faulty_draft).
+    - Lượt 2+: nếu prompt chứa chỉ dẫn 'LƯU Ý QUAN TRỌNG' VÀ phản hồi lỗi tương ứng (expected_error_keyword),
+      thì trả draft lành (healed_draft).
+    - Nếu là retry mù (không có feedback hoặc feedback sai): tiếp tục trả draft lỗi.
+    - Lượt 3 (sentence mode): nếu prompt chuyển sang chế độ câu và có tier3_lines: trả các dòng phân cách bằng \\n.
+    """
+    name = "self_healing_mock"
+
+    def __init__(
+        self,
+        faulty_draft: str,
+        healed_draft: str,
+        expected_error_keyword: str,
+        tier3_lines: list[str] | None = None,
+    ):
+        self.faulty_draft = faulty_draft
+        self.healed_draft = healed_draft
+        self.expected_error_keyword = expected_error_keyword
+        self.tier3_lines = tier3_lines
+        self.calls = 0
+        self.prompts: list[str] = []
+
+    def complete(self, prompt: str) -> str:
+        self.calls += 1
+        self.prompts.append(prompt)
+
+        # Chế độ câu Mức 3
+        if "chế độ câu (Mức 3)" in prompt and self.tier3_lines is not None:
+            return "\n".join(self.tier3_lines)
+
+        # Lượt 1: luôn trả bản lỗi
+        if self.calls == 1:
+            return self.faulty_draft
+
+        # Lượt 2+: kiểm tra có truyền đúng lỗi vào prompt không
+        if "LƯU Ý QUAN TRỌNG" in prompt and self.expected_error_keyword in prompt:
+            return self.healed_draft
+
+        # Retry mù: tiếp tục trả lỗi
+        return self.faulty_draft
+
+
+
 def test_1_3_tiered_self_healing_resolves_at_tier2():
     """Lần 1 lỗi CJK (chữ lạ chưa có trong bảng phiên âm), lần 2 nhận feedback lỗi và sửa sạch -> đạt ở Tier 2."""
     orig = "Tần Thiên tiến bước vào đại điện nguy nga."
@@ -290,6 +335,79 @@ def test_item1_glossary_self_healing_tier2_feedback_retry():
     assert r["attempts"] == 2
     assert "thiếu thuật ngữ: Khương Vô Ưu" in provider.prompts[1]
     assert "Khương Vô Ưu" in r["text"]
+
+
+def test_self_healing_mock_provider_tier2_success():
+    """BƯỚC 2: SelfHealingMockProvider tự sửa ở Lượt 2 khi prompt chứa đúng phản hồi lỗi."""
+    orig = "khương không lo xuất hiện với khí thế lẫm liệt."
+    glossary = {"khương không lo": "Khương Vô Ưu"}
+    faulty = "Vị vương gia trẻ tuổi xuất hiện với khí thế lẫm liệt."
+    healed = "Khương Vô Ưu xuất hiện với khí thế lẫm liệt."
+
+    provider = SelfHealingMockProvider(faulty, healed, expected_error_keyword="thiếu thuật ngữ")
+    client = LLMClient([provider], sleep=_NO_SLEEP)
+    cache: dict[str, str] = {}
+
+    r = rewrite_part(orig, glossary, "", client, cache, attempts=3)
+    assert r["tier"] == "tier2"
+    assert r["calls"] == 2
+    assert r["problems"] == []
+    assert r["text"] == healed
+    # Prompt lượt 2 phải chứa chỉ dẫn phản hồi lỗi
+    assert "LƯU Ý QUAN TRỌNG" in provider.prompts[1]
+    assert "thiếu thuật ngữ: Khương Vô Ưu" in provider.prompts[1]
+    # Cả hai prompt đều nhận bản gốc của part (không bị biến dạng)
+    assert "khương không lo" in provider.prompts[0]
+    assert "khương không lo" in provider.prompts[1]
+
+
+def test_self_healing_mock_provider_blind_retry_fallback():
+    """BƯỚC 2: Khi retry mù (không có phản hồi lỗi mong muốn), provider tiếp tục trả lỗi và rơi vào fallback."""
+    orig = "khương không lo xuất hiện với khí thế lẫm liệt."
+    glossary = {"khương không lo": "Khương Vô Ưu"}
+    faulty = "Vị vương gia trẻ tuổi xuất hiện với khí thế lẫm liệt."
+    healed = "Khương Vô Ưu xuất hiện với khí thế lẫm liệt."
+
+    # Yêu cầu một lỗi hoàn toàn không có trong phản hồi
+    provider = SelfHealingMockProvider(faulty, healed, expected_error_keyword="lỗi_hoàn_toàn_không_xuất_hiện")
+    client = LLMClient([provider], sleep=_NO_SLEEP)
+    cache: dict[str, str] = {}
+
+    r = rewrite_part(orig, glossary, "", client, cache, attempts=3)
+    assert r["tier"] == "fallback"
+    assert r["backend"] == "best_candidate"
+    assert r["calls"] == 3
+    assert len(r["problems"]) > 0
+
+
+def test_self_healing_mock_provider_tier3_sentence_recovery():
+    """BƯỚC 2: Lượt 1 & 2 lỗi, Lượt 3 chuyển sang chế độ câu (Mức 3) và cứu chunk thành công."""
+    orig = "Đoạn văn có câu thứ nhất. Đoạn văn có câu thứ hai. Đoạn văn có câu thứ ba."
+    glossary = {}
+    faulty = "Đoạn văn quá ngắn."  # tỉ lệ độ dài < 0.7 và tỉ lệ câu < 0.5
+    healed_tier2 = "Đoạn văn có câu thứ nhất. Đoạn văn có câu thứ hai. Đoạn văn có câu thứ ba."
+    tier3_lines = [
+        "Đoạn văn có câu thứ nhất.",
+        "Đoạn văn có câu thứ hai.",
+        "Đoạn văn có câu thứ ba.",
+    ]
+
+    # Không cho tự sửa ở lượt 2 (để ép sang lượt 3)
+    provider = SelfHealingMockProvider(
+        faulty,
+        healed_tier2,
+        expected_error_keyword="không_trùng_khớp",
+        tier3_lines=tier3_lines,
+    )
+    client = LLMClient([provider], sleep=_NO_SLEEP)
+    cache: dict[str, str] = {}
+
+    r = rewrite_part(orig, glossary, "", client, cache, attempts=3)
+    assert r["tier"] == "tier3"
+    assert r["calls"] == 3
+    assert r["problems"] == []
+    assert "chế độ câu (Mức 3)" in provider.prompts[2]
+
 
 
 def test_item5_no_blind_terminal_append_when_truncated():

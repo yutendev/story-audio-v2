@@ -128,6 +128,7 @@ export function createPipelineHandler(deps: PipelineDeps = {}): ActiveHandler {
     const geminiApiKey = exp.geminiApiKey ?? snap.gemini_api_key ?? snap.geminiApiKey;
     const devkitApiKey = exp.devkitApiKey ?? snap.devkit_api_key ?? snap.devkitApiKey;
     const devkitBaseUrl = exp.devkitBaseUrl ?? snap.devkit_base_url ?? snap.devkitBaseUrl;
+    const allowFallbackTts = Boolean(snap.allow_fallback_tts ?? snap.allowFallbackTts ?? exp.allowFallbackTts ?? exp.allow_fallback_tts);
 
     const payloadBase: Record<string, unknown> = {
       url: String(job.sourceUrl),
@@ -137,6 +138,7 @@ export function createPipelineHandler(deps: PipelineDeps = {}): ActiveHandler {
       qa: snap.qa,
       voice: snap.voice,
       rate: snap.rate,
+      allow_fallback_tts: allowFallbackTts,
       providers: providers ? String(providers) : undefined,
       ai_model: aiModel ? String(aiModel) : undefined,
       openrouter_api_key: openrouterApiKey ? String(openrouterApiKey) : undefined,
@@ -277,6 +279,32 @@ export function createPipelineHandler(deps: PipelineDeps = {}): ActiveHandler {
       }
     };
 
+    const promoteRewrittenChapters = async (): Promise<void> => {
+      for (const c of await listChapters(jobId)) {
+        if (c.stageState === "rewritten") {
+          const sidecarPath = path.join(workdir, "chapters", pad4(c.index), "rewritten.chunks.json");
+          let eligible = false;
+          if (existsSync(sidecarPath)) {
+            try {
+              const raw = await fs.readFile(sidecarPath, "utf-8");
+              const sidecar = JSON.parse(raw);
+              const status = sidecar.chapter_status ?? "ok";
+              if (status === "ok") {
+                eligible = true;
+              } else if (status === "needs_review" && allowFallbackTts) {
+                eligible = true;
+              }
+            } catch {
+              eligible = false;
+            }
+          }
+          if (eligible) {
+            await setChapterStage({ jobId, chapterIndex: c.index, stage: "qa_passed" });
+          }
+        }
+      }
+    };
+
     // ---- stages ----------------------------------------------------------
 
     await trySetState("running"); // idempotent — claim thường đã set; needs_review/queued thì chính ở đây chuyển
@@ -354,26 +382,27 @@ export function createPipelineHandler(deps: PipelineDeps = {}): ActiveHandler {
       // quota Gemini cho cùng kết quả (lỗi live FF-1, vòng lặp vô hạn)
       await applyChapterEvents(out.events);
       await applyArtifactEvents(out.events); // upload rewritten_text (idempotent theo sha)
-      // QA gate chạy trong worker-rewrite; mọi chương rewritten (kể cả lần run
-      // park needs_review — user resume là lúc duyệt) coi như qa_passed để tts nhận
-      for (const c of await listChapters(jobId)) {
-        if (c.stageState === "rewritten") {
-          await setChapterStage({ jobId, chapterIndex: c.index, stage: "qa_passed" });
-        }
-      }
+      // QA gate chạy trong worker-rewrite; chỉ nâng chương hợp lệ sang qa_passed (loại trừ blocked và needs_review chưa duyệt)
+      await promoteRewrittenChapters();
       if (out.exitCode !== 0) return;
       chapters = await listChapters(jobId);
       await planJobPackages(jobId);
     }
 
-    if ((await chaptersNeedingTts(jobId)).length > 0) {
+    // Đường resume: duyệt các chương rewritten và chỉ nâng sang qa_passed nếu không bị blocked
+    await promoteRewrittenChapters();
+
+    if ((await chaptersNeedingTts(jobId, workdir)).length > 0) {
       const out = await spawnStage("tts");
       if (out.aborted || out.exitCode !== 0) return;
       await applyArtifactEvents(out.events); // storeChapterAudio → probe + upload + tts_done
       chapters = await listChapters(jobId);
     }
 
-    if (chapters.length >= count) {
+    const readyForPackage = chapters.filter((c) =>
+      ["tts_done", "verified"].includes(c.stageState) || Boolean(c.audioAssetId),
+    );
+    if (readyForPackage.length >= count) {
       await planJobPackages(jobId); // idempotent — resume thường xuyên nhảy qua stages đầu
       const pkgs = await db.bookPackage.findMany({
         where: { jobId },
@@ -406,6 +435,13 @@ export function createPipelineHandler(deps: PipelineDeps = {}): ActiveHandler {
         await finishPackageBuild(jobId, pkg.sequence, workdir, { store: getStore() });
       }
       await trySetState("completed");
+    } else {
+      const hasPendingChapters = chapters.some((c) =>
+        ["rewritten", "discovered", "downloaded", "normalized"].includes(c.stageState),
+      );
+      if (hasPendingChapters) {
+        await trySetState("needs_review");
+      }
     }
   };
 }

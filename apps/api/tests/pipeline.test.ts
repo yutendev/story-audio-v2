@@ -137,6 +137,16 @@ async function writeChapterFiles(
     const content = body(no);
     const rel = `chapters/${pad4(no)}/${fileName}`;
     await writeFile(join(workdir, rel), content, "utf-8");
+    if (fileName === "rewritten.txt") {
+      const sidecar = {
+        schema_version: "1.0",
+        chapter_no: no,
+        text_sha256: sha(content),
+        chapter_status: "ok",
+        chunks: [],
+      };
+      await writeFile(join(dir, "rewritten.chunks.json"), JSON.stringify(sidecar, null, 2), "utf-8");
+    }
     events.push(
       { type: "chapter_status", chapter_no: no, state: status },
       { type: "artifact_ready", path: rel, kind, checksum: sha(content) },
@@ -381,7 +391,7 @@ describe("pipeline orchestrator (wiring production)", () => {
           "rewritten",
           "rewritten_text",
         )),
-        { type: "final", status: "needs_review", summary: "2 chương rewritten; 2 phần giữ bản gốc cần duyệt" },
+        { type: "final", status: "needs_review", summary: "2 chương rewritten; 2 phần fallback cần duyệt" },
       ],
     };
     const jobId = await newJob();
@@ -470,4 +480,91 @@ describe("pipeline orchestrator (wiring production)", () => {
     expect(actionsOf()).toEqual([]);
     expect((await jobRow(jobId))?.state).toBe("completed");
   }, 30_000);
+
+  it("T5 API không đưa chương blocked vào TTS", async () => {
+    scripts = happyScripts(1);
+    scripts.rewrite = {
+      exit: 0,
+      emit: async ({ workdir }) => {
+        const evs = await writeChapterFiles(
+          workdir,
+          1,
+          "rewritten.txt",
+          () => "Bản viết lại chương 1 có lỗi nghiêm trọng.\n",
+          "rewritten",
+          "rewritten_text",
+        );
+        const sidecar = {
+          schema_version: "1.0",
+          chapter_no: 1,
+          text_sha256: sha("Bản viết lại chương 1 có lỗi nghiêm trọng.\n"),
+          chapter_status: "blocked",
+          chunks: [],
+        };
+        await writeFile(
+          join(workdir, "chapters", pad4(1), "rewritten.chunks.json"),
+          JSON.stringify(sidecar, null, 2),
+          "utf-8",
+        );
+        return [
+          { type: "stage_started", stage: "rewrite" },
+          ...evs,
+          ...FINAL_SUCCESS,
+        ];
+      },
+    };
+    const jobId = await newJob();
+    await handlerFactory()(jobId, new AbortController().signal);
+
+    const rows = await chapterRows(jobId);
+    expect(rows[0].stageState).not.toBe("qa_passed");
+    expect(rows[0].stageState).toBe("rewritten");
+    expect(actionsOf()).not.toContain("tts");
+  }, 30_000);
+
+  it("T6 Resume không lọt chương blocked", async () => {
+    scripts = happyScripts(1);
+    scripts.rewrite = {
+      exit: 30, // needs_review
+      emit: async ({ workdir }) => {
+        const evs = await writeChapterFiles(
+          workdir,
+          1,
+          "rewritten.txt",
+          () => "Bản viết lại chương 1 có fatal error.\n",
+          "rewritten",
+          "rewritten_text",
+        );
+        const sidecar = {
+          schema_version: "1.0",
+          chapter_no: 1,
+          text_sha256: sha("Bản viết lại chương 1 có fatal error.\n"),
+          chapter_status: "blocked",
+          chunks: [],
+        };
+        await writeFile(
+          join(workdir, "chapters", pad4(1), "rewritten.chunks.json"),
+          JSON.stringify(sidecar, null, 2),
+          "utf-8",
+        );
+        return [
+          { type: "stage_started", stage: "rewrite" },
+          ...evs,
+          { type: "final", status: "needs_review", summary: "blocked" },
+        ];
+      },
+    };
+    const jobId = await newJob();
+    await handlerFactory()(jobId, new AbortController().signal);
+    expect((await jobRow(jobId))?.state).toBe("needs_review");
+
+    await setJobState({ jobId, state: "running" });
+    spawnCalls = [];
+    await handlerFactory()(jobId, new AbortController().signal);
+
+    const rows = await chapterRows(jobId);
+    expect(rows[0].stageState).toBe("rewritten");
+    expect(actionsOf()).not.toContain("tts");
+  }, 30_000);
 });
+

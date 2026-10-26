@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import re
 import shutil
 import subprocess
@@ -26,7 +27,7 @@ import edge_tts
 from story_audio import config
 from story_audio.exit_codes import ExitCode
 from story_audio.normalize import split_raw
-from story_audio.rewrite import chunk_text
+from story_audio.rewrite import chunk_text, verify_chunks_sidecar
 
 DEFAULT_VOICE = "vi-VN-HoaiMyNeural"  # port từ bản cũ
 DEFAULT_RATE = "-10%"                 # port từ bản cũ
@@ -185,6 +186,7 @@ def tts_stage(payload, workdir: Path, em, engine: TTSEngine | None = None,
 
     em.send("stage_started", stage="tts")
     cache_dir = workdir / "tts-cache"
+    allow_fallback_tts = bool(payload.get("allow_fallback_tts", False))
     processed = skipped = tts_failed = 0
     for d in dirs:
         no = int(d.name)
@@ -197,6 +199,39 @@ def tts_stage(payload, workdir: Path, em, engine: TTSEngine | None = None,
             em.send("error", message=f"chương {no} thiếu rewritten.txt (mất văn bản đã duyệt)",
                     retryable=False)
             continue
+
+        ok, reason = verify_chunks_sidecar(d)
+        if not ok:
+            skipped += 1
+            em.send("chapter_status", chapter_no=no, state="failed")
+            em.send("error", message=f"chương {no} kiểm tra sidecar thất bại: {reason}",
+                    retryable=False)
+            continue
+
+        sidecar_path = d / "rewritten.chunks.json"
+        try:
+            sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+            ch_status = sidecar.get("chapter_status", "ok")
+        except Exception as e:
+            skipped += 1
+            em.send("chapter_status", chapter_no=no, state="failed")
+            em.send("error", message=f"chương {no} lỗi đọc sidecar: {e}", retryable=False)
+            continue
+
+        if ch_status == "blocked":
+            skipped += 1
+            em.send("chapter_status", chapter_no=no, state="failed")
+            em.send("error", message=f"chương {no} bị từ chối vào TTS do trạng thái 'blocked'",
+                    retryable=False)
+            continue
+
+        if ch_status == "needs_review" and not allow_fallback_tts:
+            skipped += 1
+            em.send("chapter_status", chapter_no=no, state="failed")
+            em.send("error", message=f"chương {no} bị từ chối vào TTS do trạng thái 'needs_review' (cần allow_fallback_tts=true)",
+                    retryable=False)
+            continue
+
         if out.exists() and out.stat().st_size > 0:
             processed += 1  # chạy lại: đã có mp3 — báo artifact để Node verify, không tái synth
             em.send("chapter_status", chapter_no=no, state="tts_done")

@@ -74,7 +74,7 @@ DEFAULT_QA: dict[str, float] = {
 }
 
 # ---------------------------------------------------------
-# Fallback Options
+# Fallback Options & Severity Classification
 # ---------------------------------------------------------
 # Phase 1: Mặc định tắt (False) để QA Gate cấp chương kiểm tra trung thực;
 # có thể opt-in qua payload["strip_cjk_fallback"] = True.
@@ -83,6 +83,38 @@ DEFAULT_STRIP_CJK_FALLBACK = False
 
 # Tự sửa khi cache hit trượt validate (mặc định BẬT theo chuẩn Phase 1)
 DEFAULT_CACHE_HEAL = True
+
+# Tỉ lệ chunk fallback ngữ nghĩa (semantic) tối đa cho phép trong một chương trước khi bị chuyển sang NEEDS_REVIEW.
+# [QUYẾT ĐỊNH VÒNG 4] Giá trị tạm: 0.20 (20%). Chờ hiệu chuẩn khi có dữ liệu LLM thật.
+# Mẫu số: tỉ lệ được tính bằng (số chunk fallback mức semantic) / (tổng số chunk của chương).
+# Các chunk chỉ mắc lỗi formatting (dấu câu, độ dài) không tính vào tử số này.
+MAX_FALLBACK_RATIO = float(os.environ.get("MAX_FALLBACK_RATIO", "0.20"))
+
+# Bản đồ phân loại mức độ nghiêm trọng của lỗi kiểm định:
+# - formatting: không làm sai nghĩa, có thể xử lý hậu kỳ (dấu kết câu, tỉ lệ độ dài)
+# - semantic: làm sai hoặc mất nghĩa câu chuyện, bắt buộc cần duyệt (thuật ngữ, số liệu, câu, ngoặc thoại)
+# - fatal: hỏng hoàn toàn (lỗi provider / chưa dịch, còn sót ký tự CJK)
+ERROR_SEVERITY_MAP: dict[str, str] = {
+    "câu cuối mất dấu kết câu": "formatting",
+    "độ dài lệch": "formatting",
+    "ngoặc thoại lệch": "semantic",  # [GIẢ ĐỊNH / CẦN USER CHỐT] Mặc định an toàn xếp semantic
+    "thiếu thuật ngữ": "semantic",
+    "thiếu số liệu": "semantic",
+    "tỉ lệ câu": "semantic",
+    "thiếu câu": "semantic",
+    "còn sót CJK": "fatal",
+    "cjk_chars_found": "fatal",
+    "provider_error": "fatal",
+}
+
+
+def get_error_severity(error_msg: str) -> str:
+    """Phân loại mức độ nghiêm trọng của một thông báo lỗi dựa trên ERROR_SEVERITY_MAP."""
+    for key, sev in ERROR_SEVERITY_MAP.items():
+        if key in error_msg:
+            return sev
+    return "semantic"  # Mặc định an toàn nếu mã lỗi chưa được phân loại
+
 
 # ---------------------------------------------------------
 # TTS & Audio Settings (Phase 3 & 4)

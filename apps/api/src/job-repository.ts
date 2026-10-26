@@ -3,6 +3,8 @@
 //  - mọi hàm nhận jobId và WHERE luôn scope theo job (không query toàn bảng);
 //  - đầu vào kiểm ở trust boundary tại đây (ValidationError);
 //  - write nhiều bước luôn trong $transaction để không có state nửa vời.
+import fs from "node:fs";
+import path from "node:path";
 import { ConflictError, NotFoundError, ValidationError, getDb } from "./db";
 import {
   CHAPTER_STAGES,
@@ -224,15 +226,36 @@ export async function listChapters(
 }
 
 /** T6.3 — chương CẦN TTS: đã qa_passed mà chưa có audio asset nào.
- * Chạy lại job: chương tts_done (đã có audio verified) bị loại — không hẹn TTS lại. */
-export async function chaptersNeedingTts(jobId: string): Promise<number[]> {
+ * Chạy lại job: chương tts_done (đã có audio verified) bị loại — không hẹn TTS lại.
+ * Nếu truyền workdir: kiểm tra sidecar để loại trừ chương có chapter_status = "blocked". */
+export async function chaptersNeedingTts(jobId: string, workdir?: string): Promise<number[]> {
   if (!jobId.trim()) throw new ValidationError("jobId rỗng");
   const rows = await getDb().chapter.findMany({
     where: { jobId, stageState: "qa_passed", audioAssetId: null },
     orderBy: { index: "asc" },
     select: { index: true },
   });
-  return rows.map((r) => r.index);
+  if (!workdir) {
+    return rows.map((r) => r.index);
+  }
+  const result: number[] = [];
+  for (const r of rows) {
+    const pad = String(r.index).padStart(4, "0");
+    const sidecarPath = path.join(workdir, "chapters", pad, "rewritten.chunks.json");
+    if (!fs.existsSync(sidecarPath)) {
+      continue;
+    }
+    try {
+      const data = JSON.parse(fs.readFileSync(sidecarPath, "utf-8"));
+      if (data.chapter_status === "blocked") {
+        continue;
+      }
+      result.push(r.index);
+    } catch {
+      continue;
+    }
+  }
+  return result;
 }
 
 /**
