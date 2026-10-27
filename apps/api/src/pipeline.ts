@@ -180,7 +180,13 @@ export function createPipelineHandler(deps: PipelineDeps = {}): ActiveHandler {
           ...(geminiApiKey ? { GEMINI_API_KEY: String(geminiApiKey) } : {}),
           ...(devkitApiKey ? { DEVKIT_API_KEY: String(devkitApiKey) } : {}),
           ...(devkitBaseUrl ? { DEVKIT_BASE_URL: String(devkitBaseUrl) } : {}),
-          ...(aiModel ? { VIETLAI_OPENROUTER_MODEL: String(aiModel), VIETLAI_DEVKIT_MODEL: String(aiModel) } : {}),
+          ...(aiModel
+            ? {
+                VIETLAI_OPENROUTER_MODEL: String(aiModel),
+                VIETLAI_DEVKIT_MODEL: String(aiModel),
+                VIETLAI_GEMINI_MODEL: String(aiModel),
+              }
+            : {}),
         };
         const onEvent = async (ev: Record<string, unknown>) => {
           try {

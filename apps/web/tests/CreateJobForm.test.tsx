@@ -161,7 +161,7 @@ describe("CreateJobForm", () => {
     render(<CreateJobForm onCreated={onCreated} />);
     await fillValidCreate();
     // Click OpenRouter provider
-    fireEvent.click(screen.getByText("🌐 OpenRouter"));
+    fireEvent.click(screen.getByText("OpenRouter"));
     // Click Qwen 2.5 72B
     fireEvent.click(screen.getByText("Qwen 2.5 72B"));
     fireEvent.click(screen.getByRole("button", { name: "Tạo job" }));
@@ -178,7 +178,7 @@ describe("CreateJobForm", () => {
     render(<CreateJobForm onCreated={onCreated} />);
     await fillValidCreate();
     // Click DevKit provider
-    fireEvent.click(screen.getByText("🚀 DevKit (OpenAI)"));
+    fireEvent.click(screen.getByText("DevKit (OpenAI)"));
     // Click DeepSeek R1 (550B)
     fireEvent.click(screen.getByText("DeepSeek R1 (550B)"));
     fireEvent.click(screen.getByRole("button", { name: "Tạo job" }));

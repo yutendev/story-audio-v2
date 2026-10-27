@@ -1,19 +1,38 @@
-// T8.2 — tiến độ job LIVE: per-chapter (GET chapters — canonical) + per-stage (đếm từ
-// chapters) + feed event. SSE chỉ là TÍN HIỆU "có gì mới" → debounce → refresh từ API,
-// nên trạng thái LUÔN đúng kể cả reload trang hay reconnect (event nằm trong DB).
 import { useEffect, useRef, useState } from "react";
-import { fetchChapters, fetchEventsAfter, fetchJob } from "./api";
+import { motion, AnimatePresence } from "framer-motion";
+import {
+  Rocket,
+  Zap,
+  FileText,
+  HardDriveDownload,
+  AlertTriangle,
+  AlertOctagon,
+  CheckCircle2,
+  Clock,
+  Bot,
+  Mic,
+  Package,
+  Settings,
+  ArrowDownToLine,
+  Copy,
+  Maximize2,
+  Minimize2,
+  Play,
+  Download,
+  Headphones,
+  X,
+  Info,
+  Eye,
+} from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+import { fetchChapters, fetchEventsAfter, fetchJob, postJobAction } from "./api";
+import { SlideOverReviewDrawer } from "./SlideOverReviewDrawer";
 import type { ChapterRow, JobEvent, JobRow } from "./api";
 import { openEventStream } from "./sse";
 import type { StreamHandle } from "./sse";
 import { JobControls } from "./JobControls";
 import { extractStoryTitle, VI_JOB_STATES } from "./JobsList";
 
-/** Mini audio player state */
-interface PlayingAudio {
-  title: string;
-  url: string;
-}
 
 const STAGE_ORDER = [
   "discovered",
@@ -58,15 +77,18 @@ const VI_ARTIFACT_NAMES: Record<string, string> = {
   description: "Mô tả sách",
 };
 
-const VI_EVENT_TYPES: Record<string, { label: string; icon: string; level: "info" | "progress" | "warning" | "error" | "success" }> = {
-  stage_started: { label: "GIAI ĐOẠN", icon: "🚀", level: "info" },
-  progress: { label: "TIẾN ĐỘ", icon: "⚡", level: "progress" },
-  chapter_status: { label: "CHƯƠNG", icon: "📄", level: "info" },
-  artifact_ready: { label: "XUẤT FILE", icon: "💾", level: "success" },
-  quota_wait: { label: "HẠN MỨC AI", icon: "⚠️", level: "warning" },
-  needs_review: { label: "CẦN DUYỆT", icon: "👀", level: "warning" },
-  error: { label: "CẢNH BÁO", icon: "❌", level: "error" },
-  final: { label: "KẾT QUẢ", icon: "🎉", level: "success" },
+export const VI_EVENT_TYPES: Record<
+  string,
+  { label: string; icon: LucideIcon; level: "info" | "progress" | "warning" | "error" | "success" }
+> = {
+  stage_started: { label: "GIAI ĐOẠN", icon: Rocket, level: "info" },
+  progress: { label: "TIẾN ĐỘ", icon: Zap, level: "progress" },
+  chapter_status: { label: "CHƯƠNG", icon: FileText, level: "info" },
+  artifact_ready: { label: "XUẤT FILE", icon: HardDriveDownload, level: "success" },
+  quota_wait: { label: "HẠN MỨC AI", icon: AlertTriangle, level: "warning" },
+  needs_review: { label: "CẦN DUYỆT", icon: AlertOctagon, level: "warning" },
+  error: { label: "CẢNH BÁO", icon: AlertOctagon, level: "error" },
+  final: { label: "KẾT QUẢ", icon: CheckCircle2, level: "success" },
 };
 
 const EVENT_FEED_LIMIT = 100;
@@ -139,7 +161,13 @@ function formatEventText(ev: JobEvent): string {
   return ev.message || ev.summary || `${ev.type}`;
 }
 
-export function JobProgress({ jobId }: { jobId: string }) {
+export function JobProgress({
+  jobId,
+  onPlayAudioTrack,
+}: {
+  jobId: string;
+  onPlayAudioTrack?: (track: { title: string; subTitle?: string; url: string; coverLabel?: string }) => void;
+}) {
   const [job, setJob] = useState<JobRow | null>(null);
   const [chapters, setChapters] = useState<{ total: number; items: ChapterRow[] } | null>(null);
   const [events, setEvents] = useState<JobEvent[]>([]);
@@ -147,13 +175,12 @@ export function JobProgress({ jobId }: { jobId: string }) {
   const streamRef = useRef<StreamHandle | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
 
-  // Audio player state
-  const [playingAudio, setPlayingAudio] = useState<PlayingAudio | null>(null);
-
   // Live Terminal state
   const [autoScroll, setAutoScroll] = useState(true);
   const [isConsoleExpanded, setIsConsoleExpanded] = useState(false);
   const [copyStatus, setCopyStatus] = useState<string>("");
+  const [reviewDrawerOpen, setReviewDrawerOpen] = useState<boolean>(false);
+  const [reviewChapterIdx, setReviewChapterIdx] = useState<number>(1);
   const consoleBodyRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -237,14 +264,20 @@ export function JobProgress({ jobId }: { jobId: string }) {
   const percent = chapters.total > 0 ? Math.round((doneCount / chapters.total) * 100) : 0;
 
   // Tính toán Active Task Banner
-  const computeActiveTask = () => {
+  const computeActiveTask = (): {
+    type: string;
+    icon: string;
+    title: string;
+    detail: string;
+    percent?: number;
+  } => {
     if (job.state === "waiting_quota") {
       const waitTime = job.notBefore
         ? `Tự động tiếp tục lúc: ${new Date(job.notBefore).toLocaleTimeString("vi-VN")}`
         : "Đang chờ đến lượt hạn ngạch tiếp theo...";
       return {
         type: "waiting_quota",
-        icon: "⏳",
+        icon: <Clock size={20} className="text-amber-500 shrink-0" />,
         title: "Tạm dừng đợi hồi hạn ngạch AI (Rate Limit)",
         detail: `Nhà cung cấp AI báo vượt quá quota miễn phí. Hệ thống sẽ tự động gửi lại yêu cầu khi hết thời gian đợi. ${waitTime}`,
       };
@@ -252,7 +285,7 @@ export function JobProgress({ jobId }: { jobId: string }) {
     if (job.state === "needs_review") {
       return {
         type: "needs_review",
-        icon: "👀",
+        icon: <AlertTriangle size={20} className="text-amber-500 shrink-0" />,
         title: "Có chương cần bạn duyệt chất lượng",
         detail: "Hệ thống phát hiện đoạn văn bản cần người kiểm tra trước khi chuyển sang bước thu âm audio.",
       };
@@ -260,7 +293,7 @@ export function JobProgress({ jobId }: { jobId: string }) {
     if (job.state === "failed") {
       return {
         type: "failed",
-        icon: "❌",
+        icon: <AlertOctagon size={20} className="text-rose-500 shrink-0" />,
         title: "Quá trình chuyển thể gặp sự cố",
         detail: job.lastError || "Vui lòng xem log bên dưới hoặc bấm nút 'Thử lại' để tiếp tục.",
       };
@@ -268,7 +301,7 @@ export function JobProgress({ jobId }: { jobId: string }) {
     if (job.state === "completed") {
       return {
         type: "completed",
-        icon: "✅",
+        icon: <CheckCircle2 size={20} className="text-emerald-500 shrink-0" />,
         title: "Toàn bộ sách nói đã hoàn thành xuất sắc!",
         detail: "Tất cả các chương đã được chuốt văn, thu âm TTS và đóng gói thành phẩm hoàn chỉnh.",
       };
@@ -276,7 +309,7 @@ export function JobProgress({ jobId }: { jobId: string }) {
     if (job.state === "queued") {
       return {
         type: "queued",
-        icon: "⏱️",
+        icon: <Clock size={20} className="text-slate-400 shrink-0" />,
         title: "Đang trong hàng đợi hệ thống",
         detail: "Đang chuẩn bị điều phối worker để khởi chạy tiến trình.",
       };
@@ -293,9 +326,14 @@ export function JobProgress({ jobId }: { jobId: string }) {
       const done = typeof lastProgress.done === "number" ? lastProgress.done : 0;
       const total = typeof lastProgress.total === "number" ? lastProgress.total : 0;
       const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+      let stageIcon = <Zap size={20} className="text-amber-500 shrink-0" />;
+      if (stage === "rewrite") stageIcon = <Bot size={20} className="text-blue-500 shrink-0" />;
+      else if (stage === "tts") stageIcon = <Mic size={20} className="text-purple-500 shrink-0" />;
+      else if (stage === "package") stageIcon = <Package size={20} className="text-emerald-500 shrink-0" />;
+
       return {
         type: "running",
-        icon: stage === "rewrite" ? "🤖" : stage === "tts" ? "🎙️" : stage === "package" ? "📦" : "⚡",
+        icon: stageIcon,
         title: `Đang thực hiện: ${stageName}`,
         detail: `Đã hoàn thành ${done}/${total} phần (${pct}%) · Hệ thống đang tiếp tục xử lý các phần tiếp theo...`,
         percent: pct,
@@ -305,7 +343,7 @@ export function JobProgress({ jobId }: { jobId: string }) {
     if (lastEvent) {
       return {
         type: "running",
-        icon: "⚙️",
+        icon: <Settings size={20} className="text-blue-500 shrink-0" />,
         title: "Đang xử lý pipeline chuyển thể",
         detail: formatEventText(lastEvent),
       };
@@ -313,7 +351,7 @@ export function JobProgress({ jobId }: { jobId: string }) {
 
     return {
       type: "running",
-      icon: "⚡",
+      icon: <Zap size={20} className="text-amber-500 shrink-0" />,
       title: "Dây chuyền đang chạy",
       detail: "Đang kết nối worker và điều phối các tác vụ chuyển thể...",
     };
@@ -401,7 +439,7 @@ export function JobProgress({ jobId }: { jobId: string }) {
       {/* ACTIVE TASK BANNER: CÔNG VIỆC HIỆN TẠI ĐANG THỰC HIỆN */}
       <div className={`active-task-banner ${activeTask.type}`}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1 }}>
-          <span style={{ fontSize: 20 }}>{activeTask.icon}</span>
+          <span style={{ display: "inline-flex", alignItems: "center" }}>{activeTask.icon}</span>
           <div>
             <div style={{ fontWeight: 700, fontSize: 13, display: "flex", alignItems: "center", gap: 8 }}>
               {activeTask.title}
@@ -432,7 +470,8 @@ export function JobProgress({ jobId }: { jobId: string }) {
               onClick={() => setAutoScroll((prev) => !prev)}
               title={autoScroll ? "Bấm để tắt tự động cuộn" : "Bấm để bật tự động cuộn"}
             >
-              <span>{autoScroll ? "⬇ Cuộn: BẬT" : "⏸ Cuộn: TẮT"}</span>
+              <ArrowDownToLine size={13} style={{ marginRight: 4 }} />
+              <span>{autoScroll ? "Cuộn: BẬT" : "Cuộn: TẮT"}</span>
             </button>
             <button
               type="button"
@@ -440,7 +479,8 @@ export function JobProgress({ jobId }: { jobId: string }) {
               onClick={handleCopyLogs}
               title="Sao chép toàn bộ log ra clipboard"
             >
-              <span>{copyStatus || "📋 Sao chép"}</span>
+              <Copy size={13} style={{ marginRight: 4 }} />
+              <span>{copyStatus || "Sao chép"}</span>
             </button>
             <button
               type="button"
@@ -448,7 +488,12 @@ export function JobProgress({ jobId }: { jobId: string }) {
               onClick={() => setIsConsoleExpanded((prev) => !prev)}
               title={isConsoleExpanded ? "Thu gọn console" : "Mở rộng console"}
             >
-              <span>{isConsoleExpanded ? "▲ Thu nhỏ" : "▼ Mở rộng"}</span>
+              {isConsoleExpanded ? (
+                <Minimize2 size={13} style={{ marginRight: 4 }} />
+              ) : (
+                <Maximize2 size={13} style={{ marginRight: 4 }} />
+              )}
+              <span>{isConsoleExpanded ? "Thu nhỏ" : "Mở rộng"}</span>
             </button>
           </div>
         </div>
@@ -466,7 +511,7 @@ export function JobProgress({ jobId }: { jobId: string }) {
             events.map((ev) => {
               const meta = VI_EVENT_TYPES[ev.type] || {
                 label: ev.type.toUpperCase(),
-                icon: "🔹",
+                icon: Info,
                 level: "info" as const,
               };
               const timeStr = formatEventTime(ev.createdAt);
@@ -500,9 +545,9 @@ export function JobProgress({ jobId }: { jobId: string }) {
                   <span className="live-log-seq">#{ev.seq}</span>
                   <span
                     className="live-log-badge"
-                    style={{ background: badgeBg, color: badgeColor }}
+                    style={{ background: badgeBg, color: badgeColor, display: "inline-flex", alignItems: "center", gap: 4 }}
                   >
-                    <span>{meta.icon}</span>
+                    <meta.icon size={11} strokeWidth={2.2} />
                     <span>{meta.label}</span>
                   </span>
                   <span className="live-log-text" style={{ color: textColor }}>
@@ -528,11 +573,58 @@ export function JobProgress({ jobId }: { jobId: string }) {
         const pending = chapters.items
           .filter((c) => c.reviewState === "needs_review")
           .map((c) => c.index);
-        return pending.length > 0 ? (
-          <p role="status" style={{ margin: "8px 0" }}>
-            Chương chờ duyệt: {pending.join(", ")}
-          </p>
-        ) : null;
+
+        if (pending.length === 0 && job.state !== "needs_review") return null;
+
+        return (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            transition={{ duration: 0.25 }}
+            className="studio-qa-banner qa-action-banner"
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div
+                style={{
+                  width: 40,
+                  height: 40,
+                  borderRadius: "50%",
+                  background: "var(--amber-subtle)",
+                  color: "var(--amber-text)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  flexShrink: 0,
+                }}
+              >
+                <AlertTriangle size={22} strokeWidth={2} />
+              </div>
+              <div>
+                <p role="status" className="studio-qa-banner-title" style={{ margin: 0 }}>
+                  Chương chờ duyệt: {pending.length > 0 ? pending.join(", ") : "Cần kiểm định chất lượng"}
+                </p>
+                <div className="studio-qa-banner-sub">
+                  Phát hiện phân đoạn cần kiểm tra trước khi chuyển sang thu âm TTS. Bấm &quot;Soi lỗi &amp; Sửa&quot; để xem từng câu bị cảnh báo và duyệt tại chỗ.
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <button
+                type="button"
+                onClick={() => {
+                  if (pending.length > 0) setReviewChapterIdx(pending[0]);
+                  setReviewDrawerOpen(true);
+                }}
+                className="studio-btn-warning"
+              >
+                <Eye size={15} />
+                <span>Soi lỗi &amp; Sửa nội dung</span>
+              </button>
+            </div>
+          </motion.div>
+        );
       })()}
 
       {/* Nút điều khiển */}
@@ -571,8 +663,24 @@ export function JobProgress({ jobId }: { jobId: string }) {
                       {stageLabel} ({c.stageState})
                     </span>
                   </td>
-                  <td style={{ color: isNeedsReview ? "var(--amber)" : "var(--ink-subtle)", fontWeight: isNeedsReview ? 600 : 400 }}>
-                    {c.reviewState}
+                  <td style={{ color: isNeedsReview ? "var(--amber)" : "var(--ink-subtle)", fontWeight: isNeedsReview ? 700 : 400 }}>
+                    {isNeedsReview ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setReviewChapterIdx(c.index);
+                          setReviewDrawerOpen(true);
+                        }}
+                        className="studio-badge studio-badge-warning"
+                        style={{ cursor: "pointer", border: "none" }}
+                        title="Bấm để mở ngăn kéo soi lỗi chương này"
+                      >
+                        <AlertTriangle size={11} />
+                        <span>Cần duyệt ({c.reviewState})</span>
+                      </button>
+                    ) : (
+                      c.reviewState
+                    )}
                   </td>
                   <td>
                     {c.audioAssetId ? (
@@ -580,18 +688,28 @@ export function JobProgress({ jobId }: { jobId: string }) {
                         <span style={{ fontSize: 11, fontWeight: 700, color: "var(--primary)", background: "var(--primary-light)", padding: "2px 6px", borderRadius: 4 }}>có</span>
                         <button
                           type="button"
-                          onClick={() => setPlayingAudio({
-                            title: `${c.title || `Chương ${c.index}`}`,
-                            url: `/api/jobs/${encodeURIComponent(jobId)}/assets/${encodeURIComponent(c.audioAssetId!)}/download`,
-                          })}
+                          onClick={() => {
+                            if (onPlayAudioTrack) {
+                              onPlayAudioTrack({
+                                title: `Chương ${c.index}: ${c.title || `Chương ${c.index}`}`,
+                                subTitle: job ? extractStoryTitle(job.sourceUrl) : "Sách nói tiếng Việt",
+                                url: `/api/jobs/${encodeURIComponent(jobId)}/assets/${encodeURIComponent(c.audioAssetId!)}/download`,
+                                coverLabel: job ? extractStoryTitle(job.sourceUrl) : "STORY AUDIO",
+                              });
+                            }
+                          }}
+                          className="studio-btn-primary"
                           style={{
-                            fontSize: 11, fontWeight: 700, padding: "4px 10px",
-                            background: "var(--primary)", color: "#fff", borderRadius: 6,
-                            border: "none", cursor: "pointer", display: "inline-flex",
-                            alignItems: "center", gap: 4,
+                            fontSize: 11,
+                            fontWeight: 700,
+                            padding: "4px 10px",
+                            display: "inline-flex",
+                            alignItems: "center",
+                            gap: 4,
                           }}
                         >
-                          ▶ Nghe
+                          <Play size={12} strokeWidth={2} />
+                          <span>Nghe</span>
                         </button>
                         <a
                           href={`/api/jobs/${encodeURIComponent(jobId)}/assets/${encodeURIComponent(c.audioAssetId!)}/download?download=1`}
@@ -603,7 +721,8 @@ export function JobProgress({ jobId }: { jobId: string }) {
                             alignItems: "center", gap: 4,
                           }}
                         >
-                          ⬇ MP3
+                          <Download size={12} strokeWidth={2} />
+                          <span>MP3</span>
                         </a>
                       </div>
                     ) : (
@@ -616,40 +735,19 @@ export function JobProgress({ jobId }: { jobId: string }) {
           </tbody>
         </table>
       </div>
-
-      {/* FLOATING AUDIO PLAYER */}
-      {playingAudio && (
-        <div style={{
-          position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 9999,
-          background: "linear-gradient(135deg, #0f172a 0%, #1e293b 100%)",
-          borderTop: "2px solid var(--primary)",
-          padding: "10px 20px", display: "flex", alignItems: "center", gap: 14,
-          boxShadow: "0 -4px 20px rgba(0,0,0,0.3)",
-        }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: "#f8fafc", marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              🎧 {playingAudio.title}
-            </div>
-            <audio
-              controls
-              autoPlay
-              src={playingAudio.url}
-              style={{ width: "100%", height: 36 }}
-            />
-          </div>
-          <button
-            type="button"
-            onClick={() => setPlayingAudio(null)}
-            style={{
-              background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)",
-              color: "#f8fafc", borderRadius: 6, padding: "6px 12px", cursor: "pointer",
-              fontSize: 12, fontWeight: 600, flexShrink: 0,
-            }}
-          >
-            ✕ Đóng
-          </button>
-        </div>
-      )}
+      {/* Slide-over QA Review Drawer */}
+      <SlideOverReviewDrawer
+        isOpen={reviewDrawerOpen}
+        onClose={() => setReviewDrawerOpen(false)}
+        jobId={jobId}
+        chapterIndex={reviewChapterIdx}
+        chapters={chapters.items}
+        onSelectChapterIndex={(idx) => setReviewChapterIdx(idx)}
+        onApproveAndResume={async () => {
+          await postJobAction(jobId, "resume");
+          setReloadKey((k) => k + 1);
+        }}
+      />
     </section>
   );
 }

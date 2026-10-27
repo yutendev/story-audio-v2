@@ -171,4 +171,22 @@ describe("JobProgress", () => {
     await waitFor(() => expect(screen.getByText("HẠN MỨC AI")).toBeTruthy());
     expect(screen.getByText(/openrouter\/gemma/)).toBeTruthy();
   });
+
+  it("gọi onPlayAudioTrack khi bấm nút Nghe trong bảng chương để kết nối Player chung", async () => {
+    chapterState = "tts_done";
+    const onPlayAudioTrackMock = vi.fn();
+    render(<JobProgress jobId="job-1" onPlayAudioTrack={onPlayAudioTrackMock} />);
+
+    await waitFor(() => expect(screen.getByText("Nghe")).toBeTruthy());
+    fireEvent.click(screen.getByText("Nghe"));
+
+    expect(onPlayAudioTrackMock).toHaveBeenCalledTimes(1);
+    expect(onPlayAudioTrackMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: expect.stringContaining("Chương 1"),
+        url: expect.stringContaining("/api/jobs/job-1/assets/asset-1/download"),
+      }),
+    );
+  });
 });
+

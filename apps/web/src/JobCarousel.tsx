@@ -1,4 +1,5 @@
 // JobCarousel — Băng chuyền sách & công việc đang chạy (chuẩn "Continue Reading" Babuk)
+import { BookOpen, Star } from "lucide-react";
 import { extractStoryTitle } from "./JobsList";
 import type { JobRow } from "./api";
 
@@ -20,7 +21,7 @@ export function JobCarousel({
     return (
       <div style={{ marginBottom: 20 }}>
         <div className="studio-section-title">Tiếp tục đọc & nghe</div>
-        <div style={{ background: "#f8fafc", padding: "24px", borderRadius: "16px", border: "1px dashed #cbd5e1", textAlign: "center", color: "var(--studio-text-sub)", fontSize: 13 }}>
+        <div style={{ background: "var(--studio-surface)", padding: "24px", borderRadius: "16px", border: "1px dashed var(--studio-border)", textAlign: "center", color: "var(--studio-text-sub)", fontSize: 13 }}>
           Chưa có tác phẩm nào trong thư viện. Bấm "+ Thêm truyện mới" để bắt đầu nạp truyện!
         </div>
       </div>
@@ -47,7 +48,7 @@ export function JobCarousel({
         {/* Active Featured Card */}
         <div className="studio-featured-card">
           <div className="studio-cover-art">
-            <span style={{ fontSize: 26, marginBottom: 4 }}>📖</span>
+            <BookOpen size={24} className="text-white" strokeWidth={1.75} style={{ marginBottom: 4 }} />
             <div style={{ fontSize: 10, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
               {activeTitle}
             </div>
@@ -57,10 +58,11 @@ export function JobCarousel({
           <div className="studio-featured-info">
             <div>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
-                <span className="studio-rating-pill">
-                  ★ 4.8
+                <span className="studio-rating-pill" style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
+                  <Star size={11} className="fill-amber-400 text-amber-400" />
+                  <span>4.8</span>
                 </span>
-                <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 10, background: activeJob.state === "completed" ? "#dcfce7" : "#eff6ff", color: activeJob.state === "completed" ? "#166534" : "#1e40af", fontWeight: 700 }}>
+                <span className={`studio-badge ${activeJob.state === "completed" ? "studio-badge-success" : activeJob.state === "failed" ? "studio-badge-danger" : activeJob.state === "needs_review" ? "studio-badge-warning" : "studio-badge-info"}`}>
                   {activeJob.state}
                 </span>
               </div>
@@ -96,7 +98,7 @@ export function JobCarousel({
               onClick={() => onSelectJob(j.id)}
               title={title}
             >
-              <span style={{ fontSize: 24, marginBottom: 6 }}>📚</span>
+              <BookOpen size={22} className="text-slate-600 mb-1" strokeWidth={1.75} />
               <div style={{ fontSize: 10.5, fontWeight: 700, color: "var(--studio-text-main)", overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", width: "100%" }}>
                 {title}
               </div>

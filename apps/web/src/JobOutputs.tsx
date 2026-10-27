@@ -1,6 +1,5 @@
-// T8.4 — thư viện output: M4B/MP4/description/thumbnail; tải qua link presigned
-// NGẮN HẠN request từ API (bucket R2 vẫn KHÔNG công khai). Lỗi 503/404 hiển thị.
 import { useEffect, useState } from "react";
+import { Headphones, Video, FileText, Image, File, PackageCheck, Download, Play } from "lucide-react";
 import { fetchDownloadLink, fetchJobAssets } from "./api";
 import type { AssetRow, PresignedLink } from "./api";
 
@@ -18,12 +17,21 @@ const OUTPUT_DESCRIPTIONS: Record<string, string> = {
   thumbnail: "Ảnh bìa kích thước 1280x720",
 };
 
-const OUTPUT_ICONS: Record<string, string> = {
-  m4b: "🎧",
-  mp4: "🎬",
-  description: "📜",
-  thumbnail: "🖼️",
-};
+export function renderOutputIcon(kind: string) {
+  const props = { size: 16, strokeWidth: 1.75, style: { marginRight: 6, verticalAlign: "middle" } };
+  switch (kind) {
+    case "m4b":
+      return <Headphones {...props} className="text-emerald-600" />;
+    case "mp4":
+      return <Video {...props} className="text-blue-600" />;
+    case "description":
+      return <FileText {...props} className="text-slate-600" />;
+    case "thumbnail":
+      return <Image {...props} className="text-amber-600" />;
+    default:
+      return <File {...props} className="text-slate-500" />;
+  }
+}
 
 export function isOutputAsset(asset: AssetRow): boolean {
   return asset.kind in OUTPUT_KINDS;
@@ -75,7 +83,7 @@ export function JobOutputs({ jobId }: { jobId: string }) {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 18 }}>🎁</span>
+            <PackageCheck size={18} className="text-emerald-600" />
             <h3 style={{ fontSize: 16, fontWeight: 700, color: "#0f172a", margin: 0 }}>
               Thư viện output
             </h3>
@@ -115,7 +123,7 @@ export function JobOutputs({ jobId }: { jobId: string }) {
               {items.map((a) => (
                 <tr key={a.id}>
                   <td style={{ fontWeight: 600 }}>
-                    <span style={{ marginRight: 6 }}>{OUTPUT_ICONS[a.kind] ?? "📁"}</span>
+                    {renderOutputIcon(a.kind)}
                     {OUTPUT_KINDS[a.kind] ?? a.kind}
                   </td>
                   <td style={{ color: "var(--ink-muted)", fontSize: 11 }}>
@@ -139,10 +147,10 @@ export function JobOutputs({ jobId }: { jobId: string }) {
                           textDecoration: "none",
                           display: "inline-flex",
                           alignItems: "center",
-                          gap: 4,
+                          gap: 6,
                         }}
                       >
-                        ⬇️ Tải về máy
+                        <Download size={14} /> Tải về máy
                       </a>
                       {(a.kind === "m4b" || a.kind === "chapter_audio") && (
                         <a
@@ -159,10 +167,10 @@ export function JobOutputs({ jobId }: { jobId: string }) {
                             textDecoration: "none",
                             display: "inline-flex",
                             alignItems: "center",
-                            gap: 4,
+                            gap: 6,
                           }}
                         >
-                          ▶ Nghe online
+                          <Play size={14} /> Nghe online
                         </a>
                       )}
                       {links[a.id] ? (

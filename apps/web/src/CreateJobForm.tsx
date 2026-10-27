@@ -1,7 +1,19 @@
-// T8.1 — Form tạo job: URL nguồn + adapter + chương/sách (preset + tuỳ chọn) +
-// tuỳ chọn rewrite/TTS. Xác thực phía client + hiển thị lỗi TỪ API. Không secret.
 import { useState, useEffect } from "react";
 import type { FormEvent } from "react";
+import {
+  Check,
+  Link2,
+  Zap,
+  Lightbulb,
+  Bot,
+  ShieldAlert,
+  Settings,
+  Globe,
+  Rocket,
+  RefreshCw,
+  Cpu,
+  AlertTriangle,
+} from "lucide-react";
 import { createJob } from "./api";
 import type { ExportOptions } from "./api";
 
@@ -239,7 +251,7 @@ export function CreateJobForm({ onCreated }: Props) {
 
       {/* ================= BƯỚC 1: NẠP TRUYỆN ================= */}
       <div className={`pipeline-node ${isStep1Done ? "completed" : "active"}`}>
-        <div className="node-icon">{isStep1Done ? "✓" : "1"}</div>
+        <div className="node-icon">{isStep1Done ? <Check size={14} strokeWidth={2.5} /> : "1"}</div>
         <div className="node-body card-modern" style={{ padding: "20px 24px" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
             <h3 style={{ fontSize: 16, fontWeight: 700, color: "#0f172a", margin: 0 }}>
@@ -290,10 +302,11 @@ export function CreateJobForm({ onCreated }: Props) {
                   top: "50%",
                   transform: "translateY(-50%)",
                   color: "#94a3b8",
-                  fontSize: 15,
+                  display: "inline-flex",
+                  alignItems: "center",
                 }}
               >
-                🔗
+                <Link2 size={16} />
               </span>
             </div>
           </div>
@@ -304,8 +317,9 @@ export function CreateJobForm({ onCreated }: Props) {
               <label style={{ fontSize: 12, color: "#64748b", fontWeight: 600, margin: 0 }}>
                 Nguồn (adapter)
               </label>
-              <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                ⚡ Tự động nhận diện từ URL (hoặc chọn thủ công nếu cần)
+              <span style={{ fontSize: 11, color: "var(--text-muted)", display: "inline-flex", alignItems: "center", gap: 4 }}>
+                <Zap size={12} className="text-amber-500" />
+                <span>Tự động nhận diện từ URL (hoặc chọn thủ công nếu cần)</span>
               </span>
             </div>
             <select
@@ -435,8 +449,9 @@ export function CreateJobForm({ onCreated }: Props) {
                   ) : null}
                 </div>
 
-                <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 12, borderTop: "1px dashed #e2e8f0", paddingTop: 8 }}>
-                  💡 {perBook <= 10 ? "Tập ngắn — Tiện nghe nhanh khi di chuyển hoặc chạy bộ" : perBook <= 30 ? "Chuẩn cân bằng — Tối ưu dung lượng và thời lượng pin điện thoại" : "Tập dài — Thích hợp nghe liên tục qua đêm"}
+                <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 12, borderTop: "1px dashed #e2e8f0", paddingTop: 8, display: "flex", alignItems: "center", gap: 5 }}>
+                  <Lightbulb size={13} className="text-amber-500 shrink-0" />
+                  <span>{perBook <= 10 ? "Tập ngắn — Tiện nghe nhanh khi di chuyển hoặc chạy bộ" : perBook <= 30 ? "Chuẩn cân bằng — Tối ưu dung lượng và thời lượng pin điện thoại" : "Tập dài — Thích hợp nghe liên tục qua đêm"}</span>
                 </div>
               </fieldset>
             </div>
@@ -516,8 +531,8 @@ export function CreateJobForm({ onCreated }: Props) {
                               {v.genre}
                             </span>
                           </div>
-                          <span style={{ fontSize: 12, color: isSelected ? "var(--primary)" : "transparent", fontWeight: 700 }}>
-                            ✓
+                          <span style={{ display: "inline-flex", alignItems: "center" }}>
+                            <Check size={14} strokeWidth={2.5} style={{ color: isSelected ? "var(--primary)" : "transparent" }} />
                           </span>
                         </div>
                       );
@@ -583,8 +598,9 @@ export function CreateJobForm({ onCreated }: Props) {
                 style={{ marginTop: 2 }}
               />
               <div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: exportOptions.rewriteAi ? "var(--primary)" : "#0f172a" }}>
-                  🤖 Bật rewrite AI (Chuốt văn thông minh)
+                <div style={{ fontSize: 13, fontWeight: 700, color: exportOptions.rewriteAi ? "var(--primary)" : "#0f172a", display: "flex", alignItems: "center", gap: 6 }}>
+                  <Bot size={15} className="text-indigo-500" />
+                  <span>Bật rewrite AI (Chuốt văn thông minh)</span>
                 </div>
                 <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 2, lineHeight: 1.4 }}>
                   Tự động biên tập lại câu cú từ bản dịch convert thô, ngắt nhịp tự nhiên như dịch giả người thật.
@@ -617,8 +633,9 @@ export function CreateJobForm({ onCreated }: Props) {
                 style={{ marginTop: 2, accentColor: "#f59e0b" }}
               />
               <div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: exportOptions.isAdultContent ? "#b45309" : "#0f172a" }}>
-                  🔞 Nội dung 18+ (Cảnh báo nhạy cảm)
+                <div style={{ fontSize: 13, fontWeight: 700, color: exportOptions.isAdultContent ? "#b45309" : "#0f172a", display: "flex", alignItems: "center", gap: 6 }}>
+                  <ShieldAlert size={15} className="text-amber-600" />
+                  <span>Nội dung 18+ (Cảnh báo nhạy cảm)</span>
                 </div>
                 <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 2, lineHeight: 1.4 }}>
                   Tối ưu hóa các đoạn văn nhạy cảm để hệ thống sinh âm thanh AI không bị chặn hoặc từ chối tạo file.
@@ -643,8 +660,9 @@ export function CreateJobForm({ onCreated }: Props) {
             >
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 6 }}>
                 <div>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: "#1e293b" }}>
-                    ⚙️ Nhà cung cấp & Mô hình AI Chuốt văn
+                  <span style={{ fontSize: 13, fontWeight: 700, color: "#1e293b", display: "flex", alignItems: "center", gap: 6 }}>
+                    <Settings size={15} className="text-slate-700" />
+                    <span>Nhà cung cấp & Mô hình AI Chuốt văn</span>
                   </span>
                   <div style={{ fontSize: 11.5, color: "var(--text-muted)", marginTop: 2 }}>
                     Tích hợp linh hoạt OpenRouter (DeepSeek / Qwen / Llama) để tránh nghẽn hạn mức Gemini Free.
@@ -659,9 +677,13 @@ export function CreateJobForm({ onCreated }: Props) {
                     color: "#059669",
                     fontWeight: 600,
                     border: "1px solid #a7f3d0",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 4,
                   }}
                 >
-                  ⚡ Đa nền tảng linh hoạt
+                  <Zap size={12} />
+                  <span>Đa nền tảng linh hoạt</span>
                 </span>
               </div>
 
@@ -672,13 +694,14 @@ export function CreateJobForm({ onCreated }: Props) {
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 8 }}>
                   {[
-                    { id: "openrouter", name: "🌐 OpenRouter", desc: "DeepSeek, Llama, Qwen (Khuyên dùng)" },
-                    { id: "devkit", name: "🚀 DevKit (OpenAI)", desc: "DeepSeek R1 550B (agent.devkit.vn)" },
-                    { id: "gemini", name: "⚡ Google Gemini", desc: "Gemini 2.0 / 1.5 Flash" },
-                    { id: "openrouter,gemini", name: "🔄 Dự phòng OpenRouter ⇄ Gemini", desc: "Tự động đổi khi nghẽn" },
-                    { id: "devkit,gemini", name: "🔄 Dự phòng DevKit ⇄ Gemini", desc: "Tự động đổi khi nghẽn" },
+                    { id: "openrouter", name: "OpenRouter", icon: Globe, desc: "DeepSeek, Llama, Qwen (Khuyên dùng)" },
+                    { id: "devkit", name: "DevKit (OpenAI)", icon: Rocket, desc: "DeepSeek R1 550B (agent.devkit.vn)" },
+                    { id: "gemini", name: "Google Gemini", icon: Cpu, desc: "Gemini 2.0 / 1.5 Flash" },
+                    { id: "openrouter,gemini", name: "Dự phòng OpenRouter ⇄ Gemini", icon: RefreshCw, desc: "Tự động đổi khi nghẽn" },
+                    { id: "devkit,gemini", name: "Dự phòng DevKit ⇄ Gemini", icon: RefreshCw, desc: "Tự động đổi khi nghẽn" },
                   ].map((p) => {
                     const isSelected = aiProvider === p.id;
+                    const ProviderIcon = p.icon;
                     return (
                       <div
                         key={p.id}
@@ -695,8 +718,9 @@ export function CreateJobForm({ onCreated }: Props) {
                           transition: "all 0.15s ease",
                         }}
                       >
-                        <div style={{ fontSize: 12.5, fontWeight: isSelected ? 700 : 600, color: isSelected ? "var(--primary)" : "#1e293b" }}>
-                          {p.name}
+                        <div style={{ fontSize: 12.5, fontWeight: isSelected ? 700 : 600, color: isSelected ? "var(--primary)" : "#1e293b", display: "flex", alignItems: "center", gap: 5 }}>
+                          <ProviderIcon size={14} className={isSelected ? "text-emerald-600" : "text-slate-500"} />
+                          <span>{p.name}</span>
                         </div>
                         <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
                           {p.desc}
@@ -851,8 +875,9 @@ export function CreateJobForm({ onCreated }: Props) {
                         {showApiKey ? "Ẩn" : "Hiện"}
                       </button>
                     </div>
-                    <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
-                      💡 Key được lưu tự động trên trình duyệt này (hoặc có thể khai báo vĩnh viễn trong file <code>.env</code> ở máy chủ).
+                    <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4, display: "flex", alignItems: "center", gap: 4 }}>
+                      <Lightbulb size={12} className="text-amber-500 shrink-0" />
+                      <span>Key được lưu tự động trên trình duyệt này (hoặc có thể khai báo vĩnh viễn trong file <code>.env</code> ở máy chủ).</span>
                     </div>
                   </div>
                 </div>
@@ -995,8 +1020,9 @@ export function CreateJobForm({ onCreated }: Props) {
                         {showDkApiKey ? "Ẩn" : "Hiện"}
                       </button>
                     </div>
-                    <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
-                      💡 Key được lưu tự động trên trình duyệt này (hoặc có thể khai báo biến <code>DEVKIT_API_KEY</code> trong file <code>.env</code> ở máy chủ).
+                    <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4, display: "flex", alignItems: "center", gap: 4 }}>
+                      <Lightbulb size={12} className="text-amber-500 shrink-0" />
+                      <span>Key được lưu tự động trên trình duyệt này (hoặc có thể khai báo biến <code>DEVKIT_API_KEY</code> trong file <code>.env</code> ở máy chủ).</span>
                     </div>
                   </div>
                 </div>
@@ -1042,15 +1068,21 @@ export function CreateJobForm({ onCreated }: Props) {
                       );
                     })}
                   </div>
-                  <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
-                    ⚡ Gemini sử dụng <code>GEMINI_API_KEY</code> đã khai báo trong <code>.env</code>.
+                  <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2, display: "flex", alignItems: "center", gap: 4 }}>
+                    <Zap size={12} className="text-amber-500 shrink-0" />
+                    <span>Gemini sử dụng <code>GEMINI_API_KEY</code> đã khai báo trong <code>.env</code>.</span>
                   </div>
                 </div>
               )}
             </div>
           )}
 
-          {error ? <p role="alert">⚠ {error}</p> : null}
+          {error ? (
+            <p role="alert" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <AlertTriangle size={14} className="text-rose-500 shrink-0" />
+              <span>{error}</span>
+            </p>
+          ) : null}
 
           {/* Submit Button */}
           <div style={{ marginTop: 18 }}>
@@ -1069,7 +1101,14 @@ export function CreateJobForm({ onCreated }: Props) {
                 gap: 8,
               }}
             >
-              {busy ? "Đang khởi tạo dây chuyền chuyển thể…" : "🚀 Bắt đầu chuyển thể thành Sách nói (Tạo job)"}
+              {busy ? (
+                "Đang khởi tạo dây chuyền chuyển thể…"
+              ) : (
+                <>
+                  <Rocket size={16} strokeWidth={2} />
+                  <span>Bắt đầu chuyển thể thành Sách nói (Tạo job)</span>
+                </>
+              )}
             </button>
           </div>
         </div>

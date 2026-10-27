@@ -74,6 +74,9 @@ COMMON_CJK_TRANSLIT: dict[str, str] = {
     "小": "tiểu",
     "第": "thứ",
     "章": "chương",
+    "尉獠": "Úy Liêu",
+    "尉": "Úy",
+    "獠": "Liêu",
 }
 
 
@@ -185,3 +188,166 @@ def normalize_brackets(text: str) -> str:
         return f"({inner})" if inner else " "  # bracket rỗng: bỏ + chèn 1 space (collapse sau)
 
     return _CJK_BRACKET.sub(_sub, text)
+
+
+_AUTHOR_NOTE_PATTERNS = [
+    re.compile(r"(?i)cảm ơn thư hữu.*(?:minh chủ|bản thư|trở thành)"),
+    re.compile(r"(?i)minh chủ thứ \d+"),
+    re.compile(r"(?i)cảm ơn bạn .* (?:đã ủng hộ|donate|chuyển khoản)"),
+    re.compile(r"(?i)^(?:ps|p/s|p\.s)\s*[:：]"),
+    re.compile(r"(?i)^tấu chương hết"),
+    re.compile(r"(?i)^hẹn gặp lại.*(?:ngày mai|chương sau)"),
+    re.compile(r"(?i)cầu (?:nguyệt phiếu|vé tháng|phiếu|hoa|đề cử|kim đậu)"),
+    re.compile(r"(?i)chúc (?:bạn|các bạn|quý độc giả) đọc truyện vui vẻ"),
+    re.compile(r"(?i)^(?:nguồn|truyện được convert|truyện được dịch|đọc truyện tại)\b"),
+]
+
+
+def is_author_note(paragraph: str) -> bool:
+    """Kiểm tra đoạn văn có phải lời nhắn tác giả, cảm ơn donate/minh chủ hay rác crawler."""
+    p_strip = paragraph.strip()
+    if not p_strip:
+        return False
+    return any(pat.search(p_strip) for pat in _AUTHOR_NOTE_PATTERNS)
+
+
+def strip_author_notes(paragraphs: list[str]) -> list[str]:
+    """Tự động loại bỏ các đoạn chú thích tác giả, cảm ơn minh chủ/donate ở cuối chương và trong thân bài."""
+    if not paragraphs:
+        return []
+    # Loại bỏ các đoạn note rõ ràng
+    filtered = [p for p in paragraphs if not is_author_note(p)]
+    # Cắt tỉa các đoạn trống ở cuối
+    while filtered and not filtered[-1].strip():
+        filtered.pop()
+    return filtered
+
+
+def auto_balance_quotes(text: str) -> str:
+    """Tự động cân bằng ngoặc kép (tránh lỗi lẻ ngoặc thoại hoặc mở mà không đóng)."""
+    if not text:
+        return ""
+
+    # Chuẩn hóa ngoặc góc CJK 「」 sang “”
+    text = text.replace("「", "“").replace("」", "”")
+    text = text.replace("『", "“").replace("』", "”")
+
+    lines = text.split("\n")
+    balanced_lines = []
+    for line in lines:
+        l = line
+        open_c = l.count("“")
+        close_c = l.count("”")
+        if open_c > close_c:
+            diff = open_c - close_c
+            l = l.rstrip() + "”" * diff
+        elif close_c > open_c:
+            diff = close_c - open_c
+            while diff > 0 and l.endswith("”"):
+                l = l[:-1]
+                diff -= 1
+
+        straight_c = l.count('"')
+        if straight_c % 2 != 0:
+            l = l.rstrip() + '"'
+
+        balanced_lines.append(l)
+
+    return "\n".join(balanced_lines)
+
+
+NON_VIET_PINYIN_MAP: dict[str, str] = {
+    "liao": "liêu",
+    "xiao": "tiêu",
+    "chen": "trần",
+    "zhang": "trương",
+    "wang": "vương",
+    "feng": "phong",
+    "huang": "hoàng",
+    "zhao": "triệu",
+    "yang": "dương",
+    "zhou": "chu",
+    "zheng": "trịnh",
+    "zhu": "chu",
+    "zeng": "tăng",
+    "jiang": "giang",
+    "qian": "tiền",
+    "qing": "thanh",
+    "xian": "tiên",
+    "xiong": "hùng",
+    "deng": "đặng",
+    "peng": "bành",
+    "liang": "lương",
+    "xie": "tạ",
+    "yuan": "viên",
+    "cai": "thái",
+    "cheng": "trình",
+    "cui": "thôi",
+    "zhong": "chung",
+    "shen": "thẩm",
+    "shao": "thiệu",
+    "chang": "thường",
+}
+
+
+def transliterate_pinyin_tokens(text: str) -> str:
+    """Tự động chuyển tự các token Pinyin tên riêng tiếng Trung không dấu sang âm Hán-Việt tương ứng.
+    Chỉ áp dụng cho từ viết hoa chữ đầu (Proper Name token) và TUYỆT ĐỐI không chạm vào các từ tiếng Việt."""
+    if not text:
+        return ""
+
+    def _replace_token(m: re.Match) -> str:
+        word = m.group(0)
+        if not word[0].isupper():
+            return word
+        w_lower = word.lower()
+        if w_lower in NON_VIET_PINYIN_MAP:
+            replacement = NON_VIET_PINYIN_MAP[w_lower]
+            if word.isupper():
+                return replacement.upper()
+            return replacement.capitalize()
+        return word
+
+    # Chỉ bắt các từ Latinh thuần ASCII viết hoa chữ đầu (độ dài >= 3)
+    pattern = re.compile(r"\b[A-Z][a-z]{2,}\b")
+    return pattern.sub(_replace_token, text)
+
+
+_NARRATIVE_VERBS = (
+    r"nhìn|nhấp|bước|nói|nghĩ|trầm ngâm|thay đổi|nhíu mày|lắc đầu|gật đầu|"
+    r"đứng|ngồi|cười|thở dài|cất lời|tiến lên|quay đầu|đưa mắt|đến|đi|rút|vung|nắm|"
+    r"chậm rãi|lập tức|liền|đã|không|vẫn|đang"
+)
+
+
+def normalize_narrative_pronouns(text: str) -> str:
+    """Khóa đại từ nhân xưng trần thuật ngoài dấu thoại (chuẩn hóa Anh/anh -> Hắn/hắn)."""
+    if not text:
+        return ""
+
+    parts = re.split(r'(“[^”]*”|"[^"]*")', text)
+    processed_parts = []
+    for i, part in enumerate(parts):
+        if i % 2 == 1:
+            # Trong ngoặc kép thoại: giữ nguyên
+            processed_parts.append(part)
+        else:
+            # Ngoài ngoặc thoại: trần thuật
+            p = part
+            # Anh + động từ ở đầu câu hoặc sau dấu chấm -> Hắn
+            p = re.sub(
+                r'(?:(?<=[.!?…]\s)|(?<=\A))Anh\s+(' + _NARRATIVE_VERBS + r')\b',
+                r'Hắn \1',
+                p,
+            )
+            # anh + động từ giữa câu -> hắn
+            p = re.sub(
+                r'(?<=\s)anh\s+(' + _NARRATIVE_VERBS + r')\b',
+                r'hắn \1',
+                p,
+            )
+            processed_parts.append(p)
+
+    return "".join(processed_parts)
+
+

@@ -3,6 +3,7 @@
 // state cũ. PATCH lỏng: gửi đủ các trường người dùng sửa; server merge cục bộ.
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
+import { Settings, Lightbulb } from "lucide-react";
 import { fetchJob, updateJobSettings } from "./api";
 import type { ExportOptions, JobRow } from "./api";
 import { extractStoryTitle, VI_JOB_STATES } from "./JobsList";
@@ -148,7 +149,7 @@ export function JobDetail({ jobId }: { jobId: string }) {
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 6 }}>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-            <span style={{ fontSize: 18 }}>⚙️</span>
+            <Settings size={18} className="text-slate-700" />
             <h2 style={{ fontSize: 16, fontWeight: 700, color: "#0f172a", margin: 0 }}>
               Cài đặt tác phẩm: {extractStoryTitle(job.sourceUrl)}
             </h2>
@@ -156,8 +157,9 @@ export function JobDetail({ jobId }: { jobId: string }) {
               {VI_JOB_STATES[job.state] || job.state}
             </span>
           </div>
-          <p style={{ fontSize: 12.5, color: "var(--text-muted)", marginTop: 4 }}>
-            💡 Bạn có thể điều chỉnh lại quy cách đóng gói hoặc đổi giọng đọc cho các chương tiếp theo mà không cần nạp lại truyện từ đầu.
+          <p style={{ fontSize: 12.5, color: "var(--text-muted)", marginTop: 4, display: "flex", alignItems: "center", gap: 6 }}>
+            <Lightbulb size={15} className="text-amber-500 shrink-0" />
+            <span>Bạn có thể điều chỉnh lại quy cách đóng gói hoặc đổi giọng đọc cho các chương tiếp theo mà không cần nạp lại truyện từ đầu.</span>
           </p>
         </div>
       </div>

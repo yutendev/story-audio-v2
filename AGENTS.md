@@ -53,6 +53,7 @@ Tài liệu này là bộ luật điều hành bắt buộc cho mọi AI Agent l
 
 Báo cáo tối đa 1 trang, đúng khuôn sau, rồi dừng:
 
+0. **Skill kích hoạt:** tên skill đã nạp bằng `view_file` (hoặc `KHÔNG` nếu task không thuộc chuyên môn nào).
 1. **Task & Kết quả:** mã task/tiêu chí và trạng thái (`DONE`, `BLOCKED`, `PARTIAL`).
 2. **Bảng tiêu chí:** tiêu chí | ĐẠT / KHÔNG ĐẠT | lệnh đã chạy | output (tối đa 5 dòng).
 3. **File thay đổi:** `git diff --stat`.
@@ -66,6 +67,16 @@ Rủi ro đã ghi nhận được đưa vào mục 6 hoặc 7, không viết th�
 ## 3. Quy tắc báo cáo và thực thi
 
 Vi phạm bất kỳ điều nào dưới đây thì báo cáo bị trả lại.
+
+**R0. Cổng kích hoạt Skill bắt buộc (Skill-First Gate).**
+Trước khi gõ bất kỳ dòng code nào hoặc đọc sâu mã nguồn dự án, Agent BẮT BUỘC phải đối chiếu yêu cầu với thư mục `.agents/skills/`:
+- Dính tới Giao diện / Web / CSS / UX 👉 BẮT BUỘC gọi `view_file` nạp cả 2 file `frontend-design/SKILL.md` và `ui-ux-pro-max/SKILL.md`.
+- Dính tới Sửa Bug phức tạp / Refactor / TDD 👉 BẮT BUỘC nạp `superpowers/SKILL.md`.
+- Dính tới Dịch thuật / Chuốt văn / QA / Glossary 👉 BẮT BUỘC nạp `regression-qa/SKILL.md`.
+- Dính tới Đóng gói M4B / Video MP4 / FFmpeg 👉 BẮT BUỘC nạp `package-builder/SKILL.md`.
+- Dính tới Tối ưu / Viết code tinh gọn 👉 BẮT BUỘC nạp `ponytail/SKILL.md`.
+
+Trong Báo cáo (Mục 0) hoặc phản hồi, BẮT BUỘC phải ghi rõ skill đã kích hoạt kèm bằng chứng đã nạp file `SKILL.md`. Bỏ qua bước này coi như vi phạm R0 và kết quả bị bác bỏ.
 
 **R1. Một việc mỗi vòng.** Chỉ làm đúng mã task hoặc mã tiêu chí được giao (ví dụ D1).
 Việc khác phát hiện được chỉ ghi 1 dòng vào mục NGOÀI PHẠM VI.

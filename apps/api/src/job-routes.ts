@@ -1,5 +1,7 @@
 // Job API routes (T3.2) — POST /api/jobs, GET :id, GET :id/chapters, GET /api/jobs, POST :id/cancel.
 // Cứng theo state machine (T2.5): hành động không hợp lệ → 409 INVALID_TRANSITION.
+import { existsSync, readFileSync } from "node:fs";
+import path from "node:path";
 import { FastifyInstance } from "fastify";
 
 import { NotFoundError, ValidationError, getDb } from "./db";
@@ -124,6 +126,93 @@ export function registerJobRoutes(app: FastifyInstance): void {
     });
     const total = await db.chapter.count({ where: { jobId: id } });
     return { total, limit, offset, items: chapters };
+  });
+
+  app.get("/api/jobs/:id/chapters/:index/content", async (req, reply) => {
+    const { id, index } = req.params as { id: string; index: string };
+    const chapterIndex = Number(index);
+    if (!Number.isInteger(chapterIndex) || chapterIndex < 1) {
+      return reply.status(400).send({ error: { code: "VALIDATION", message: "chapter index không hợp lệ" } });
+    }
+    const db = getDb();
+    const chapter = await db.chapter.findUnique({
+      where: { jobId_index: { jobId: id, index: chapterIndex } },
+      select: {
+        id: true,
+        jobId: true,
+        index: true,
+        title: true,
+        stageState: true,
+        reviewState: true,
+        textAssetId: true,
+        audioAssetId: true,
+      },
+    });
+    if (!chapter) {
+      return reply.status(404).send({ error: { code: "NOT_FOUND", message: "chương không tồn tại" } });
+    }
+
+    const pad = String(chapterIndex).padStart(4, "0");
+    const workRoot = process.env.STORY_AUDIO_WORK_ROOT?.trim() || ".work";
+    const possibleDirs = [
+      path.join(workRoot, "jobs", id, "chapters", pad),
+      path.join(workRoot, id, "chapters", pad),
+      path.join(workRoot, "chapters", pad),
+    ];
+
+    let chapterDir = "";
+    for (const d of possibleDirs) {
+      if (existsSync(d)) {
+        chapterDir = d;
+        break;
+      }
+    }
+
+    let text = "";
+    let hasRewritten = false;
+    let chunks: unknown[] = [];
+    let chapterStatus = "ok";
+    let severityCounts: Record<string, number> = {};
+
+    if (chapterDir) {
+      const rewrittenPath = path.join(chapterDir, "rewritten.txt");
+      const sidecarPath = path.join(chapterDir, "rewritten.chunks.json");
+      const normalizedPath = path.join(chapterDir, "normalized.txt");
+      const rawTextPath = path.join(chapterDir, "text.txt");
+
+      if (existsSync(rewrittenPath)) {
+        text = readFileSync(rewrittenPath, "utf-8");
+        hasRewritten = true;
+      } else if (existsSync(normalizedPath)) {
+        text = readFileSync(normalizedPath, "utf-8");
+      } else if (existsSync(rawTextPath)) {
+        text = readFileSync(rawTextPath, "utf-8");
+      }
+
+      if (existsSync(sidecarPath)) {
+        try {
+          const sidecar = JSON.parse(readFileSync(sidecarPath, "utf-8"));
+          chunks = sidecar.chunks || [];
+          chapterStatus = sidecar.chapter_status || "ok";
+          severityCounts = sidecar.severity_counts || {};
+        } catch {
+          // parse error fallback
+        }
+      }
+    }
+
+    return {
+      jobId: id,
+      chapterIndex,
+      title: chapter.title,
+      stageState: chapter.stageState,
+      reviewState: chapter.reviewState,
+      hasRewritten,
+      text,
+      chunks,
+      chapterStatus,
+      severityCounts,
+    };
   });
 
   app.patch("/api/jobs/:id/settings", async (req, reply) => {

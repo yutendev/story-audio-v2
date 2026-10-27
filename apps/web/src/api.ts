@@ -89,11 +89,47 @@ export async function fetchJobs(limit = 50): Promise<JobListResult> {
 }
 
 export interface ChapterRow {
+  id?: string;
   index: number;
   title: string;
   stageState: string;
   reviewState: string;
+  textAssetId?: string | null;
   audioAssetId: string | null;
+}
+
+export interface ChapterChunkMeta {
+  index: number;
+  tier: string;
+  severity: string;
+  remaining_errors?: string[];
+  cjk_stripped_chars?: string[];
+  char_start?: number;
+  char_end?: number;
+}
+
+export interface ChapterContentResponse {
+  jobId: string;
+  chapterIndex: number;
+  title: string;
+  stageState: string;
+  reviewState: string;
+  hasRewritten: boolean;
+  text: string;
+  chunks: ChapterChunkMeta[];
+  chapterStatus?: string;
+  severityCounts?: Record<string, number>;
+}
+
+export async function fetchChapterContent(
+  jobId: string,
+  chapterIndex: number,
+): Promise<ChapterContentResponse> {
+  const res = await fetch(
+    `/api/jobs/${encodeURIComponent(jobId)}/chapters/${chapterIndex}/content`,
+  );
+  if (!res.ok) throw new Error(await parseError(res));
+  return (await res.json()) as ChapterContentResponse;
 }
 
 export interface ChaptersPage {

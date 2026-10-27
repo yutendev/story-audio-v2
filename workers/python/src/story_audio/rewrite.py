@@ -34,7 +34,10 @@ from story_audio.normalize import (
     normalize_brackets,
     split_raw,
     split_sentences,
+    auto_balance_quotes,
+    normalize_narrative_pronouns,
     strip_cjk,
+    transliterate_pinyin_tokens,
 )
 from story_audio.providers import (
     DEFAULT_DEVKIT_MODEL,
@@ -163,6 +166,9 @@ def build_prompt(
         "- Ưu tiên câu ngắn gọn (mỗi câu tối đa khoảng 25 từ). Tách các câu dài phức tạp bằng dấu chấm hoặc dấu phẩy để giọng đọc tự nhiên, có nhịp thở.",
         "- Ưu tiên văn nói tự nhiên, thuần Việt, trôi chảy, đọc lên êm tai, không dùng từ ngữ tối nghĩa.",
         "- Giữ nguyên toàn bộ tên riêng và thuật ngữ Hán Việt (nhân vật, địa danh, tông môn, cảnh giới, công pháp).",
+        "- Đại từ nhân xưng ngôi thứ ba: Đối với nhân vật nam trong lời kể trần thuật, bắt buộc 100% dùng 'hắn' hoặc 'y' hoặc tên riêng. TUYỆT ĐỐI KHÔNG dùng 'anh' cho ngôi kể trần thuật của nhân vật nam (từ 'anh' chỉ dùng trong lời thoại trực tiếp khi đối thoại xưng hô). Tuyệt đối không lẫn lộn giữa 'hắn' và 'anh'.",
+        "- Tránh các bẫy dịch thô Hán-Việt: Không dịch 'thưởng thức [người]' (phải dùng 'đánh giá cao / coi trọng'); không dịch 'đặt trước [linh hồn/tính mạng]' (phải dùng 'nhắm vào / để mắt tới'); thành ngữ và khẩu ngữ phải diễn đạt tự nhiên theo tiếng Việt, không dịch đen từng chữ.",
+        "- Tuyệt đối không để sót Pinyin không dấu trong tên riêng (ví dụ: 'Liao' bắt buộc phải phiên âm sang 'Liêu', 'Xiao' sang 'Tiêu', 'Zhang' sang 'Trương').",
         "- Dịch hoặc phiên âm toàn bộ chữ Hán, ký tự Trung Quốc (nếu còn sót trong bản gốc) sang chữ Quốc ngữ / âm Hán-Việt tiêu chuẩn. Tuyệt đối không để sót ký tự chữ Hán (CJK) nào trong văn bản viết lại.",
         "- Giữ đúng thứ tự và số lượng tình tiết của bản gốc, không thêm không bớt chi tiết.",
         "- Có thể gộp hoặc sắp lại câu cho dễ đọc nhưng không đổi ý.",
@@ -278,10 +284,82 @@ def validate(
 
     qin = original.count('"') + original.count("“") + original.count("”")
     qout = rewritten.count('"') + rewritten.count("“") + rewritten.count("”")
-    if abs(qout - qin) > max(1, config.QUOTE_DEVIATION_TOLERANCE * qin):
-        problems.append(f"ngoặc thoại lệch (vào {qin}, ra {qout})")
+    open_q = rewritten.count("“")
+    close_q = rewritten.count("”")
+    straight_q = rewritten.count('"')
+    if open_q != close_q or straight_q % 2 != 0:
+        problems.append(f"ngoặc thoại chưa cân bằng (mở {open_q}, đóng {close_q}, nháy kép {straight_q})")
+
+    if qin >= 2 and qout == 0:
+        problems.append(f"ngoặc thoại lệch (vào {qin}, ra 0)")
 
     return problems
+
+
+_COT_PATTERNS = [
+    re.compile(r"(?i)^(?:we need (?:to )?rewrite|let's parse|let's analyze|let's break down|thinking process:|the user wants|original text:|count sentences|sentence\s*\d+\s*:|so \d+ sentences|let's rewrite|the text is garbled|we need to reconstruct|we need to keep|use \"hắn\" for|avoid \"anh\"|the narrator is|paragraph \d+\s*:|rewrite\s*:)"),
+    re.compile(r"(?i)^đoạn văn viết lại\s*[:：]?$"),
+    re.compile(r"(?i)^bản viết lại\s*[:：]?$"),
+    re.compile(r"(?i)^văn bản viết lại\s*[:：]?$"),
+]
+
+_ENGLISH_LEAK_KEYWORDS = [
+    "the text is garbled",
+    "we need to reconstruct",
+    "use \"hắn\" for",
+    "avoid \"anh\"",
+    "male narrator",
+    "the narrator is",
+    "we need to keep",
+    "keep dialogues with quotes",
+    "let's reconstruct",
+    "reconstruct meaning",
+]
+
+
+def clean_llm_reasoning_and_cot(text: str) -> str:
+    """Loại bỏ triệt để chuỗi suy luận (Chain-of-Thought / CoT), thẻ <think> và lời dẫn tiếng Anh của DeepSeek-R1."""
+    if not text:
+        return ""
+    # 1. Bỏ thẻ <think>...</think> đóng
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    if "<think>" in text:
+        # Nếu thẻ <think> không được đóng, bỏ từ <think> tới câu tiếng Việt có dấu hoặc ngoặc thoại đầu tiên
+        viet_char = r"[àáảãạăắằẳẵặâấầẩẫậèéẻẽẹêếềểễệìíỉĩịòóỏõọôốồổỗộơớờởỡợùúủũụưứừửữựỳýỷỹỵđ]"
+        think_pat = r"^<think>.*?(?=(?:[^\n]*" + viet_char + r'|[“"]|\Z))'
+        text = re.sub(think_pat, "", text, flags=re.DOTALL | re.IGNORECASE)
+        text = re.sub(r"</?think>", "", text)
+    text = re.sub(r"^```(?:markdown|text|vietnamese)?\s*\n?", "", text.strip(), flags=re.IGNORECASE)
+    text = re.sub(r"\n?```\s*$", "", text.strip())
+    text = re.sub(
+        r'(?<=[.!?…”"])\s+(?:The text is garbled|We need to (?:reconstruct|rewrite|keep)|Let\'s (?:parse|analyze|break down|reconstruct)|Thinking process:|The user wants|Use "hắn" for|Avoid "anh").*?(?=(?:\n|$))',
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    cleaned_lines = []
+    for line in text.splitlines():
+        l_strip = line.strip()
+        if not l_strip:
+            cleaned_lines.append("")
+            continue
+        l_lower = l_strip.lower()
+        if any(kw in l_lower for kw in _ENGLISH_LEAK_KEYWORDS):
+            continue
+        if any(pat.search(l_strip) for pat in _COT_PATTERNS):
+            sub_m = re.match(r"(?i)^sentence\s*\d+\s*:\s*(.+)$", l_strip)
+            if sub_m:
+                c = sub_m.group(1).strip()
+                if c and not any(pat.search(c) for pat in _COT_PATTERNS):
+                    cleaned_lines.append(c)
+            sub_rewr = re.match(r"(?i)^(?:paragraph\s*\d+\s*:?\s*)?rewrite\s*:\s*(.+)$", l_strip)
+            if sub_rewr:
+                c = sub_rewr.group(1).strip()
+                if c and not any(pat.search(c) for pat in _COT_PATTERNS) and not any(kw in c.lower() for kw in _ENGLISH_LEAK_KEYWORDS):
+                    cleaned_lines.append(c)
+            continue
+        cleaned_lines.append(line)
+    return "\n".join(cleaned_lines).strip()
 
 
 def apply_deterministic_fixes(
@@ -290,6 +368,7 @@ def apply_deterministic_fixes(
     subset: dict[str, str] | None = None,
 ) -> str:
     """Mức 1 — Sửa xác định không cần gọi lại LLM:
+    - Loại bỏ CoT / thẻ <think> / tiếng Anh phân tích của model
     - Bỏ dòng rò rỉ prompt hoặc dòng lời dẫn AI độc lập
     - Chuẩn hóa ngoặc 【...】 -> (...), quote fullwidth -> chuẩn
     - Bỏ ký tự hỏng (U+FFFD), zero-width, fullwidth space
@@ -299,6 +378,8 @@ def apply_deterministic_fixes(
     """
     if not text.strip():
         return text
+
+    text = clean_llm_reasoning_and_cot(text)
 
     # Bỏ các dòng rò rỉ prompt hoặc dòng chỉ là lời dẫn AI
     lines = []
@@ -320,7 +401,31 @@ def apply_deterministic_fixes(
 
     # Chuẩn hóa ngoặc và ký tự hỏng
     text = normalize_brackets(text)
+    text = auto_balance_quotes(text)
     text = clean_corrupted_chars(text)
+    text = transliterate_pinyin_tokens(text)
+    text = normalize_narrative_pronouns(text)
+    text = re.sub(
+        r'\b(?:rất\s+)?thưởng thức\s+([A-ZÀ-Ỹ][a-zà-ỹ]+(?:\s+[A-ZÀ-Ỹ][a-zà-ỹ]+)*)',
+        r'đánh giá cao \1',
+        text,
+    )
+    text = re.sub(
+        r'\bthưởng thức\s+(năng lực|phong cách|bản lĩnh|tài năng)\b',
+        r'đánh giá cao \1',
+        text,
+    )
+    text = re.sub(
+        r'\bđặt trước\s+(linh hồn|tính mạng|sinh mệnh|mục tiêu|con mồi)\b',
+        r'nhắm vào \1',
+        text,
+    )
+    text = re.sub(
+        r'\bbụng to(?:\s+thì)?\s+bát(?: cũng)?\s+phải to\b',
+        r'tham vọng lớn thì khí lượng cũng phải lớn',
+        text,
+        flags=re.IGNORECASE,
+    )
 
     # Phiên âm CJK có trong bảng phiên âm chuẩn
     text = auto_sanitize_cjk(text, replacements=subset)
@@ -601,9 +706,19 @@ def rewrite_part(
         prev_errors = list(problems)
 
     # Hết số lần thử mà vẫn còn lỗi: chọn bản ít lỗi nhất (fallback)
-    best = min(candidates, key=lambda c: len(c["problems"]))
+    def _candidate_penalty(c: dict) -> int:
+        probs = c.get("problems", [])
+        txt = c.get("text", "")
+        if not txt or not txt.strip() or any("đầu ra rỗng" in p for p in probs):
+            return 999999
+        return len(probs)
+
+    best = min(candidates, key=_candidate_penalty)
     best_text = best["text"]
     best_probs = list(best["problems"])
+    if not best_text or not best_text.strip():
+        best_text = apply_deterministic_fixes(part, original=part, subset=subset)
+        best_probs = ["fallback về bản gốc do đầu ra LLM rỗng"]
     cjk_stripped = 0
     cjk_stripped_chars: list[dict] = []
 

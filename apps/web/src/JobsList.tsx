@@ -1,6 +1,5 @@
-// T8.2 — Job list: nhóm theo state (queued/running/waiting_quota/needs_review/failed/
-// canceled/completed) + bảng job; chọn job để xem chi tiết. Dữ liệu CHỈ từ API.
 import { useEffect, useState } from "react";
+import { Library, BookOpen, Trash2 } from "lucide-react";
 import { fetchJobs, deleteJob } from "./api";
 import type { JobListResult, JobRow } from "./api";
 
@@ -74,7 +73,7 @@ export function JobsList({ refreshKey, onSelectJob, selectedJobId }: Props) {
       if (msg.includes("Route DELETE") || msg.includes("không tồn tại")) {
         alert(
           "Server API hiện đang chạy bản code cũ trong bộ nhớ nên chưa nạp lệnh Xóa mới.\n\n" +
-          "👉 Bạn hãy chuyển sang cửa sổ Terminal đang chạy Server API, nhấn Ctrl + C rồi gõ lại:\n" +
+          "Hướng dẫn: Bạn hãy chuyển sang cửa sổ Terminal đang chạy Server API, nhấn Ctrl + C rồi gõ lại:\n" +
           "npm --prefix apps/api run dev\n" +
           "để máy chủ kích hoạt tính năng Xóa nhé!"
         );
@@ -116,7 +115,7 @@ export function JobsList({ refreshKey, onSelectJob, selectedJobId }: Props) {
     <section aria-label="Danh sách job" className="card-modern" style={{ padding: "22px 24px" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontSize: 20 }}>📚</span>
+          <Library size={20} className="text-emerald-600" />
           <h2 style={{ fontSize: 16, fontWeight: 700, color: "#0f172a", margin: 0 }}>
             Job ({result.total})
           </h2>
@@ -154,8 +153,9 @@ export function JobsList({ refreshKey, onSelectJob, selectedJobId }: Props) {
               return (
                 <tr key={job.id}>
                   <td style={{ minWidth: 160 }}>
-                    <div style={{ fontWeight: 700, fontSize: 13.5, color: "#0f172a" }}>
-                      📖 {extractStoryTitle(job.sourceUrl)}
+                    <div style={{ fontWeight: 700, fontSize: 13.5, color: "#0f172a", display: "flex", alignItems: "center", gap: 6 }}>
+                      <BookOpen size={16} className="text-slate-500" />
+                      <span>{extractStoryTitle(job.sourceUrl)}</span>
                     </div>
                   </td>
                   <td>
@@ -201,10 +201,14 @@ export function JobsList({ refreshKey, onSelectJob, selectedJobId }: Props) {
                           color: "#dc2626",
                           borderColor: "#fecaca",
                           background: "#ffffff",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 4,
                         }}
                         title="Xóa bộ truyện này khỏi tủ sách"
                       >
-                        {deletingId === job.id ? "Đang xóa…" : "🗑️ Xóa"}
+                        <Trash2 size={13} />
+                        <span>{deletingId === job.id ? "Đang xóa…" : "Xóa"}</span>
                       </button>
                     </div>
                   </td>

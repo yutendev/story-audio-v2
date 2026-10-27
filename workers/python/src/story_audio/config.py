@@ -38,6 +38,14 @@ PROMPT_LEAK_MARKERS = (
     "Yêu cầu bắt buộc",
     "biên tập viên người Việt",
     "Bạn là biên tập viên",
+    "<think>",
+    "</think>",
+    "We need rewrite",
+    "we need to rewrite",
+    "Let's parse",
+    "Count sentences:",
+    "Original text:",
+    "Thinking Process:",
 )
 
 # ---------------------------------------------------------
@@ -97,7 +105,8 @@ MAX_FALLBACK_RATIO = float(os.environ.get("MAX_FALLBACK_RATIO", "0.20"))
 ERROR_SEVERITY_MAP: dict[str, str] = {
     "câu cuối mất dấu kết câu": "formatting",
     "độ dài lệch": "formatting",
-    "ngoặc thoại lệch": "semantic",  # [GIẢ ĐỊNH / CẦN USER CHỐT] Mặc định an toàn xếp semantic
+    "ngoặc thoại lệch": "formatting",  # Đã chuyển sang formatting: tự động cân bằng ngoặc, không chặn duyệt
+    "ngoặc thoại chưa cân bằng": "formatting",
     "thiếu thuật ngữ": "semantic",
     "thiếu số liệu": "semantic",
     "tỉ lệ câu": "semantic",

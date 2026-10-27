@@ -22,7 +22,7 @@ from story_audio import events
 from story_audio import paths as P
 from story_audio import sources
 from story_audio.exit_codes import ExitCode
-from story_audio.normalize import load_replacements, normalize_brackets, normalize_text, split_raw
+from story_audio.normalize import load_replacements, normalize_brackets, normalize_text, split_raw, strip_author_notes
 from story_audio.rewrite import rewrite_stage
 from story_audio.tts import tts_stage
 from story_audio.package import package_stage
@@ -208,6 +208,7 @@ def normalize_stage(payload, workdir: Path, em: _Emitter) -> ExitCode:
         no = int(d.name)
         text_path = d / "text.txt"
         _, paragraphs = _split_raw(text_path.read_text(encoding="utf-8"))
+        paragraphs = strip_author_notes(paragraphs)
         if not paragraphs:
             # chương rỗng — dữ liệu nguồn lỗi, cần người duyệt sau khi chạy xong phần còn lại
             failed += 1
